@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Voxy · marketing shot</title>
+  <!--
+    Composition page for docs/images/*.png — rendered by render.py.
+    compose.js builds the scene for ?shot=<name> and pulls the REAL UI in:
+    ui/settings.html|css|js are loaded into THIS document (the window's
+    backdrop-filter has to see the wallpaper, which it cannot through an
+    iframe) and ui/island.html is embedded as a transparent iframe.
+    Preview by hand: python3 docs/marketing/render.py serves the repo, or run
+    `python3 -m http.server 8765 --bind 127.0.0.1` in the repo root and open
+    http://127.0.0.1:8765/docs/marketing/compose.html?shot=hero
+  -->
+  <link rel="stylesheet" href="compose.css" id="compose-css" />
+</head>
+<body class="mk">
+  <div id="mk-canvas" class="mk-canvas"></div>
+  <script src="compose.js"></script>
+</body>
+</html>

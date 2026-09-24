@@ -1,0 +1,218 @@
+/* Voxy marketing compositions. Every class here is prefixed mk- so it cannot
+   collide with ui/settings.css, which is loaded into the same document for
+   the shots that show the settings window (and is inserted BEFORE this file,
+   so the overrides below win). */
+
+:root {
+  --mk-base: #0d0c1c;
+  --mk-pink: #ff4f7b;
+  --mk-teal: #1fb6a8;
+  --mk-blue: #4b5bff;
+  --mk-violet: #9d4dff;
+  --mk-display: -apple-system, "SF Pro Display", BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --mk-text: -apple-system, "SF Pro Text", BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+/* settings.css turns the demo page into a scrolling, centred grid; the
+   composition is a fixed canvas instead. */
+html[data-mk], html[data-mk][data-demo] { overflow: hidden; background: var(--mk-base); }
+html[data-mk] body.mk,
+html[data-mk][data-demo] body.mk {
+  display: block;
+  min-height: 0;
+  width: var(--mk-w);
+  height: var(--mk-h);
+  overflow: hidden;
+  background: var(--mk-base);
+  color: #fff;
+  font-family: var(--mk-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The shot is a still: freeze every transition/animation of the real UI so
+   the capture never lands mid-way through one. */
+html.mk-still *, html.mk-still *::before, html.mk-still *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
+.mk-canvas {
+  position: relative;
+  width: var(--mk-w);
+  height: var(--mk-h);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* ------------------------------------------------------------ wallpaper */
+.mk-wall {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--mk-base);
+}
+.mk-field {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(var(--blur, 60px));
+}
+/* soft depth: darker edges. Drawn with a blurred inset shadow rather than
+   a CSS gradient on purpose: Chrome dithers gradients, and that pixel noise
+   would double the PNG sizes. */
+.mk-vignette {
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 var(--vig, 260px) calc(var(--vig, 260px) / 5) rgba(6, 5, 16, 0.5);
+}
+
+/* ------------------------------------------------------- settings window */
+.mk-win {
+  position: absolute;
+  width: 680px;
+  height: 500px;
+  transform-origin: 0 0;
+}
+/* a deeper, softer shadow than the demo's single 0 30px 70px */
+html[data-demo] .mk-win .window {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.12),
+    0 0 0 0.5px rgba(255, 255, 255, 0.16),
+    0 1px 3px rgba(0, 0, 0, 0.22),
+    0 18px 36px -6px rgba(0, 0, 0, 0.42),
+    0 48px 110px -12px rgba(0, 0, 0, 0.62);
+}
+/* The real window simply cuts its scrolling page at the bottom edge; in a
+   still that slices a row of text in half, so let the page dissolve there
+   the way the app already dissolves it under the title at the top. The fade
+   ends before a cut row's text begins (on the Model tab: after OpenAI's
+   subtitle, before the Groq row), so nothing half-visible is left. */
+html[data-demo] .mk-win .content {
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, transparent 46px, #000 62px, #000 calc(100% - 40px), transparent calc(100% - 18px));
+  mask-image: linear-gradient(180deg, transparent 0, transparent 46px, #000 62px, #000 calc(100% - 40px), transparent calc(100% - 18px));
+}
+
+/* ------------------------------------------------------- menu bar/notch */
+/* .mk-screen is laid out in "screen points" and scaled with --k, so the
+   island iframe (ui/island.html, 520×150 like the real window) and the
+   notch keep their true proportions. */
+.mk-screen {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  transform: scale(var(--k, 1));
+}
+.mk-menubar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px 0 18px;
+  background: rgba(8, 7, 18, 0.58);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(24px) saturate(1.6);
+  box-shadow: 0 0.5px 0 rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.92);
+  font: 500 13px/1 var(--mk-text);
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+}
+.mk-mb-side { display: flex; align-items: center; gap: 19px; }
+.mk-mb-side b { font-weight: 700; }
+.mk-apple { font-size: 15px; margin-right: 2px; transform: translateY(-1px); }
+.mk-mb-right { gap: 17px; }
+.mk-mb-right svg { display: block; fill: none; stroke: rgba(255, 255, 255, 0.92); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.mk-tray { width: 18px; height: 18px; filter: invert(1); opacity: 0.95; }
+.mk-clock { font-variant-numeric: tabular-nums; }
+
+.mk-notch {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: var(--notch-w, 190px);
+  height: var(--notch-h, 34px);
+  transform: translateX(-50%);
+  background: #000;
+  border-radius: 0 0 10px 10px;
+}
+/* the little concave fillets where the notch meets the top edge */
+.mk-notch::before, .mk-notch::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 7px;
+  height: 7px;
+}
+.mk-notch::before { left: -7px; background: radial-gradient(circle at 0 100%, transparent 6.5px, #000 7px); }
+.mk-notch::after { right: -7px; background: radial-gradient(circle at 100% 100%, transparent 6.5px, #000 7px); }
+
+.mk-island {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 520px;
+  height: 150px;
+  margin-left: -260px;
+  border: 0;
+  background: transparent;
+  /* island.html declares no color-scheme; if the embedding element's scheme
+     differed (settings.css sets dark on :root), Chrome would paint the
+     frame's canvas opaque. */
+  color-scheme: normal;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------ typography */
+.mk-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font: 600 30px/1 var(--mk-display);
+  letter-spacing: -0.02em;
+  color: #fff;
+}
+.mk-icon { display: block; } /* size/margins set in compose.js (grid padding) */
+.mk-h1 {
+  margin: 0;
+  font: 700 68px/1.04 var(--mk-display);
+  letter-spacing: -0.016em;
+  color: #fff;
+}
+.mk-sub {
+  margin: 0;
+  font: 400 22px/1.35 var(--mk-display);
+  letter-spacing: -0.01em;
+  color: rgba(255, 255, 255, 0.74);
+}
+
+/* ----------------------------------------------------- island close-up */
+.mk-device {
+  position: absolute;
+  padding: 11px 11px 0;
+  border-radius: 34px 34px 0 0;
+  background: #010102; /* the notch is part of this bezel: same black */
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.07),
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.12),
+    0 30px 80px -10px rgba(0, 0, 0, 0.6);
+  /* solid while the island (up to ~170 px tall when transcribing) sits
+     there, then the display fades out */
+  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 190px, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0, #000 190px, transparent 100%);
+}
+.mk-display {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 23px 23px 0 0;
+  background: var(--mk-base);
+}

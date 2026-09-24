@@ -46,3 +46,6 @@ private_keys/
 # Claude Code personal files (.claude/launch.json is shared)
 .claude/*.local.json
 CLAUDE.local.md
+
+# Python
+__pycache__/
