@@ -28,7 +28,7 @@
   <img src="docs/images/hero.png" width="100%" alt="Hold a key. Speak. It types. The Voxy island recording at the MacBook notch, above the Settings window's History tab with dictated text in five languages">
 </p>
 
-> **Early days.** Voxy is at version 0.1.0. Prebuilt releases for Apple Silicon Macs are on the [Releases page](https://github.com/DIZRAID/voxy/releases/latest), and one command [installs](#install) the latest one. The Windows port is experimental: it compiles in CI but has not been run on real hardware yet ([details](#windows)).
+> **Early days.** Voxy is at an early version (0.1). Prebuilt releases for Apple Silicon Macs are on the [Releases page](https://github.com/DIZRAID/voxy/releases/latest), and one command [installs](#install) the latest one. The Windows port is experimental: it compiles in CI but has not been run on real hardware yet ([details](#windows)).
 
 ## Install
 

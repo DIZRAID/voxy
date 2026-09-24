@@ -18,6 +18,11 @@ updates:
         patterns:
           - "tauri"
           - "tauri-*"
+    # Major versions change APIs (e.g. ureq 2 -> 3) and are migrated by hand.
+    # Tauri crate bumps also need TAURI_CLI_VERSION in release.yml updated.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "deps"
 
