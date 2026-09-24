@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Typely</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <header data-tauri-drag-region></header>
+
+  <nav class="tabbar-wrap" data-tauri-drag-region>
+    <div class="tabbar" id="tabs">
+      <button class="tab active" data-tab="general">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>General</span>
+      </button>
+      <button class="tab" data-tab="record">
+        <svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 21v-3"/></svg>
+        <span>Recording</span>
+      </button>
+      <button class="tab" data-tab="model">
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg>
+        <span>Model</span>
+      </button>
+      <button class="tab" data-tab="history">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        <span>History</span>
+      </button>
+    </div>
+  </nav>
+
+  <div id="perm-banner" class="perm-banner hidden">
+    <div class="perm-text">
+      <strong>Permissions required</strong>
+      <div class="perm-line"><span class="dot" id="perm-acc-dot"></span>Accessibility — pastes text with ⌘V</div>
+      <div class="perm-line"><span class="dot" id="perm-im-dot"></span>Input Monitoring — global hotkey</div>
+    </div>
+    <div class="perm-actions">
+      <button class="btn" id="open-access">Accessibility</button>
+      <button class="btn" id="open-input-mon">Input Monitoring</button>
+    </div>
+  </div>
+
+  <main>
+    <!-- GENERAL -->
+    <section id="tab-general" class="tab-page">
+      <div class="panel">
+        <div class="row">
+          <div class="row-info">
+            <div class="row-title">Hotkey</div>
+            <div class="row-sub">Hold to dictate</div>
+          </div>
+          <div class="row-ctl">
+            <span class="keycap" id="hotkey-label">⌘ Right Command</span>
+            <button class="btn" id="hotkey-change">Change</button>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-info">
+            <div class="row-title">Microphone</div>
+            <div class="row-sub">Recording source</div>
+          </div>
+          <div class="row-ctl dd-anchor" id="mic-anchor">
+            <button class="btn dd-trigger" id="mic-trigger">
+              <span id="mic-label">System default</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-info">
+            <div class="row-title">Sounds</div>
+            <div class="row-sub">Recording start &amp; stop cues</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="sounds-toggle" /><span></span></label>
+        </div>
+        <div class="row">
+          <div class="row-info">
+            <div class="row-title">Launch at login</div>
+            <div class="row-sub">Start Typely automatically</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="autostart-toggle" /><span></span></label>
+        </div>
+      </div>
+    </section>
+
+    <!-- RECORDING -->
+    <section id="tab-record" class="tab-page hidden">
+      <div class="panel">
+        <div class="row">
+          <div class="row-info">
+            <div class="row-title">Recording mode</div>
+            <div class="row-sub">How the hotkey behaves</div>
+          </div>
+          <div class="segmented" id="mode-seg">
+            <div class="seg-thumb"></div>
+            <button data-mode="ptt">Hold</button>
+            <button data-mode="toggle">Toggle</button>
+            <button data-mode="dynamic">Dynamic</button>
+          </div>
+        </div>
+        <div class="row srow">
+          <div class="srow-head">
+            <div class="row-info">
+              <div class="row-title">Minimum duration</div>
+              <div class="row-sub">Shorter presses are ignored as accidental</div>
+            </div>
+            <div class="sval" id="minlen-val">300 ms</div>
+          </div>
+          <div class="slider" id="minlen-slider" data-min="100" data-max="1000" data-step="50">
+            <div class="fill"></div>
+            <div class="knob"></div>
+          </div>
+        </div>
+        <div class="row srow">
+          <div class="srow-head">
+            <div class="row-info">
+              <div class="row-title">Maximum length</div>
+              <div class="row-sub">Recording stops and transcribes at this limit</div>
+            </div>
+            <div class="sval" id="maxlen-val">120 s</div>
+          </div>
+          <div class="slider" id="maxlen-slider" data-min="15" data-max="300" data-step="15">
+            <div class="fill"></div>
+            <div class="knob"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MODEL -->
+    <section id="tab-model" class="tab-page hidden">
+      <div class="model-card">
+        <div class="nvidia-badge">NVIDIA</div>
+        <div class="model-title-block">
+          <div class="row-title">Parakeet TDT 0.6B v3</div>
+          <div class="row-sub">600M parameters · on-device</div>
+        </div>
+        <div class="status-pill" id="model-pill">
+          <span class="dot pulse" id="model-pill-dot"></span>
+          <span id="model-pill-label">Enabled</span>
+        </div>
+      </div>
+      <div class="model-placeholder">
+        <div class="plus-circle">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </div>
+        <div class="ph-label">More models coming later</div>
+      </div>
+    </section>
+
+    <!-- HISTORY -->
+    <section id="tab-history" class="tab-page hidden">
+      <div class="hist-head">
+        <span class="hist-count" id="history-count">0 entries</span>
+        <div class="hist-actions">
+          <div class="dd-anchor" id="keep-anchor">
+            <button class="btn dd-trigger" id="keep-trigger">
+              <span id="keep-label">Keep: 7 days</span>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
+            </button>
+          </div>
+          <button class="btn danger-hover" id="history-clear">Clear</button>
+        </div>
+      </div>
+      <div class="hist-list" id="history-list"></div>
+      <div class="hist-empty hidden" id="history-empty">
+        <div class="empty-circle">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11v.5a6.5 6.5 0 0 0 13 0V11M12 21v-3"/></svg>
+        </div>
+        <div class="empty-title">No transcriptions yet</div>
+        <div class="empty-sub">Hold ⌘ and speak — entries will appear here</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="settings.js"></script>
+</body>
+</html>

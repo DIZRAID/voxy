@@ -1,0 +1,56 @@
+[package]
+name = "voice"
+version = "0.1.0"
+description = "Локальный голосовой ввод: push-to-talk диктовка (Parakeet TDT 0.6B v3)"
+edition = "2021"
+
+[lib]
+name = "voice_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sherpa-onnx = "1.13"
+cpal = "0.16"
+enigo = "0.6"
+arboard = "3"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+ureq = "2"
+
+[dev-dependencies]
+hound = "3.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
+core-graphics = "0.25"
+core-foundation = "0.10"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSSound"] }
+objc2-foundation = { version = "0.3", features = ["NSString"] }
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Media_Audio",
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# strip не должен касаться proc-macro и build-скриптов (собираются для
+# машины сборки): зачищенный proc-macro rustc не может загрузить.
+[profile.release.build-override]
+strip = false

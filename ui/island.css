@@ -1,0 +1,223 @@
+/* Dynamic Island по хендоффу (секция 3a): тонкая пилюля, «выползающая»
+   из выреза. Idle неотличим от выреза; recording — таймер слева,
+   волна справа. Морф размеров: 450ms cubic-bezier(.32,1.2,.55,1). */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  background: transparent;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#island {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  width: 100%;
+  height: 100%;
+}
+
+/* Свечение — отдельный слой с НЕИЗМЕННОЙ тенью: она растеризуется один
+   раз, а «дыхание» с голосом — это только opacity (работа композитора,
+   без перерисовки). Раньше тень пересчитывалась на каждом кадре и
+   нагружала процессор не меньше самого распознавания. */
+.glow {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: calc(var(--notch-w, 190px) + 140px);
+  height: var(--notch-h, 34px);
+  transform: translateX(-50%);
+  border-radius: 0 0 16px 16px;
+  box-shadow:
+    0 4px 32px rgba(125, 125, 242, 0.52),
+    0 0 46px rgba(125, 125, 242, 0.32);
+  opacity: 0;
+  transition: opacity 0.15s linear, width 0.45s cubic-bezier(0.32, 1.2, 0.55, 1);
+  will-change: opacity;
+  pointer-events: none;
+}
+#island:has(.pill.cancel-armed) .glow {
+  width: calc(var(--notch-w, 190px) + 200px);
+}
+
+/* Все размеры пилюли — от РЕАЛЬНОГО выреза (--notch-w / --notch-h
+   ставит island.js по замеру NSScreen). В покое пилюля совпадает с
+   вырезом пиксель в пиксель и потому невидима; в активных состояниях
+   расширяется от него, как у Alcove. Тень в покое не рисуем — иначе
+   она обводит «вырез» и выдаёт накладку. */
+.pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  width: var(--notch-w, 190px);
+  height: var(--notch-h, 34px);
+  border-radius: 0 0 10px 10px;
+  box-shadow: none;
+  transition:
+    width 0.45s cubic-bezier(0.32, 1.2, 0.55, 1),
+    height 0.45s cubic-bezier(0.32, 1.2, 0.55, 1),
+    border-radius 0.45s cubic-bezier(0.32, 1.2, 0.55, 1),
+    transform 0.45s cubic-bezier(0.32, 1.2, 0.55, 1),
+    opacity 0.3s ease,
+    box-shadow 0.45s ease;
+  overflow: hidden;
+}
+
+/* До прихода метрик размера не знаем — не показываем ничего. */
+:root:not([data-notch]) .pill { opacity: 0; }
+
+/* Windows и экраны без выреза: в покое пилюля полностью скрыта,
+   при записи выезжает сверху. */
+:root[data-platform="win"] [data-state="idle"] .pill,
+:root[data-notch="no"] [data-state="idle"] .pill {
+  opacity: 0;
+  transform: translateY(-110%);
+}
+
+/* Запись: вырез + по 70px «ушей» с каждой стороны — таймер и волна
+   гарантированно рядом с физическим вырезом, а не под ним; высота ушей
+   равна вырезу, так что пилюля выглядит как расширившийся вырез.
+   Свечение — отдельный слой .glow (см. выше). */
+[data-state="recording"] .pill {
+  width: calc(var(--notch-w, 190px) + 140px);
+  height: var(--notch-h, 34px);
+  border-radius: 0 0 16px 16px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+[data-state="recording"] .pill.cancel-armed {
+  width: calc(var(--notch-w, 190px) + 200px);
+}
+
+/* Transcribing / Error: «подбородок» — контент в полосе высотой 26px,
+   которая выезжает НИЖЕ выреза и потому всегда видна. */
+[data-state="processing"] .pill,
+[data-state="error"] .pill {
+  width: calc(var(--notch-w, 190px) + 40px);
+  height: calc(var(--notch-h, 34px) + 26px);
+  border-radius: 0 0 18px 18px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+[data-state="error"] .pill {
+  width: calc(var(--notch-w, 190px) + 110px);
+}
+
+/* --- содержимое состояний (одно активно за раз) --- */
+.rec-row, .proc-row, .error-row { display: none; }
+
+[data-state="recording"] .rec-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 0 20px;
+}
+
+.timer {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: #c9c9ff;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  transition: color 0.3s ease;
+}
+.timer.warn { color: #ffd60a; }
+.timer.danger { color: #ff7b72; }
+
+.wave {
+  width: 30px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+/* Полоски фиксированной высоты 16px, уровень — через transform: scaleY
+   (композитор), а не через height (перерасчёт раскладки и перерисовка). */
+.wave span {
+  width: 2px;
+  height: 16px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #d4d4ff, #7d7df2);
+  transform: scaleY(0.1875);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  will-change: transform;
+}
+.wave span.hot { box-shadow: 0 0 5px #7d7df277; }
+
+/* кнопка отмены — появляется по клику на пилюлю во время записи */
+.cancel-chip {
+  display: none;
+  border: none;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: #ff7b72;
+  background: rgba(255, 123, 114, 0.14);
+  border-radius: 999px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.cancel-chip:active { transform: scale(0.95); }
+[data-state="recording"] .pill.cancel-armed .wave { display: none; }
+[data-state="recording"] .pill.cancel-armed .cancel-chip { display: block; }
+
+[data-state="processing"] .proc-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 25px;
+}
+.spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.8px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #a3a3f7;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.proc-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.75);
+  animation: softPulse 1.4s ease-in-out infinite;
+}
+@keyframes softPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+[data-state="error"] .error-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 15px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 25px;
+}
+.error-label {
+  font-size: 11px;
+  color: #ffb3ad;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

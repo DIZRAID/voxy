@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Typely Island</title>
+  <link rel="stylesheet" href="island.css" />
+</head>
+<body>
+  <div id="island" data-state="idle">
+    <div class="glow" id="glow"></div>
+    <div class="pill" id="pill">
+      <div class="rec-row" id="rec-row">
+        <span class="timer" id="timer">0:00</span>
+        <div class="wave" id="wave"></div>
+        <button class="cancel-chip" id="cancel-chip">Cancel</button>
+      </div>
+      <div class="proc-row">
+        <div class="spinner"></div>
+        <span class="proc-label">Transcribing…</span>
+      </div>
+      <div class="error-row"><span class="error-label" id="error-label"></span></div>
+    </div>
+  </div>
+  <script src="island.js"></script>
+</body>
+</html>
