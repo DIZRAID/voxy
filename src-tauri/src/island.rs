@@ -151,7 +151,7 @@ pub fn measure_metrics() -> IslandMetrics {
 /// Порт на Windows: обычное прозрачное always-on-top окно без NSPanel.
 #[cfg(not(target_os = "macos"))]
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
-    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
     let window = WebviewWindowBuilder::new(app, "island", WebviewUrl::App("island.html".into()))
         .title("Voxy Island")
         .inner_size(WIDTH, HEIGHT)

@@ -136,8 +136,8 @@ pub fn input_monitoring_granted() -> bool {
 /// Показывает системные диалоги запроса Accessibility и Input Monitoring.
 /// Регистрирует приложение в обоих списках TCC — в том числе ЗАНОВО после
 /// пересборки, когда старая запись «протухает» из-за смены подписи бинарника.
+#[cfg(target_os = "macos")]
 pub fn request_permissions_prompt() {
-    #[cfg(target_os = "macos")]
     unsafe {
         use core_foundation::base::TCFType;
         use core_foundation::boolean::CFBoolean;

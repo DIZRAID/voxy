@@ -34,6 +34,10 @@ env:
   RUST_BACKTRACE: 1
   # No debug info in CI builds: faster compile and link, much smaller cache.
   CARGO_PROFILE_DEV_DEBUG: 0
+  # Windows: link the static C runtime like `cargo tauri dev/build` do. The
+  # sherpa-onnx libraries are built with /MT; without this the linker mixes
+  # CRTs (LNK4098 on LIBCMT). Ignored on macOS.
+  STATIC_VCRUNTIME: "true"
 
 jobs:
   build:

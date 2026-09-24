@@ -468,7 +468,7 @@ fn resolve_startup_engine(app: &AppHandle, settings: &SharedSettings) -> Startup
 pub fn run() {
     init_logging();
 
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Второй запуск не создаёт второй процесс (и второй event tap!),
         // а просто показывает окно настроек уже работающего экземпляра.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -480,9 +480,7 @@ pub fn run() {
         ));
 
     #[cfg(target_os = "macos")]
-    {
-        builder = builder.plugin(tauri_nspanel::init());
-    }
+    let builder = builder.plugin(tauri_nspanel::init());
 
     builder
         .invoke_handler(tauri::generate_handler![
