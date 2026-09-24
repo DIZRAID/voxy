@@ -114,10 +114,30 @@ fn copy_text(text: String) -> Result<(), String> {
 
 #[tauri::command]
 fn get_model_status(state: State<AppShared>) -> serde_json::Value {
+    let active = store::read(&state.settings).active_model.clone();
+    let (name, vendor) = engine_label(&active);
     json!({
         "status": asr::status_name(state.model_status.load(Ordering::Relaxed)),
-        "model": store::read(&state.settings).active_model,
+        "model": active,
+        "name": name,
+        "vendor": vendor,
     })
+}
+
+/// Имя и производитель активного движка для карточки статуса в окне
+/// настроек. Без обращения к Связке ключей (в отличие от models_overview),
+/// поэтому его можно звать при каждом открытии окна.
+fn engine_label(active: &str) -> (String, String) {
+    match active.strip_prefix(store::ONLINE_PREFIX) {
+        Some(p) => match online::provider(p) {
+            Some(p) => (format!("{} {}", p.name, p.model), "Online".to_string()),
+            None => (active.to_string(), String::new()),
+        },
+        None => match models::find(active) {
+            Some(m) => (m.name.clone(), m.vendor.clone()),
+            None => (active.to_string(), String::new()),
+        },
+    }
 }
 
 // ------------------------------------------------------- менеджер моделей
@@ -394,12 +414,58 @@ fn show_settings(app: &AppHandle) {
         log::error!("в tauri.conf.json нет окна settings");
         return;
     };
+    // Стекло (прозрачное окно + NSVisualEffectView из windowEffects) — только
+    // macOS. Порт на Windows не проверен: там окно непрозрачное, фон рисует
+    // CSS html[data-platform="win"], а цвет ниже убирает белую вспышку.
+    let config = if cfg!(target_os = "macos") {
+        config
+    } else {
+        let mut config = config;
+        config.transparent = false;
+        config.window_effects = None;
+        config.background_color = Some(tauri::window::Color(26, 22, 43, 255));
+        config
+    };
     match tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build()) {
         Ok(window) => {
+            #[cfg(target_os = "macos")]
+            force_dark_appearance(&window);
+            // Окно закрыли посреди захвата хоткея — снимаем флаг, иначе
+            // следующая клавиша в любом приложении стала бы хоткеем.
+            if let Some(state) = app.try_state::<AppShared>() {
+                let capture = state.capture.clone();
+                window.on_window_event(move |event| {
+                    if matches!(event, tauri::WindowEvent::Destroyed) {
+                        capture.store(false, Ordering::Relaxed);
+                    }
+                });
+            }
             let _ = window.show();
             let _ = window.set_focus();
         }
         Err(e) => log::error!("не удалось создать окно настроек: {e}"),
+    }
+}
+
+/// Тёмное стекло только для окна настроек. `"theme": "Dark"` в конфиге не
+/// подходит: tao ставит NSApp.appearance на всё приложение (меню трея,
+/// островок, системные алерты). NSWindow.appearance действует на одно окно.
+#[cfg(target_os = "macos")]
+fn force_dark_appearance(window: &tauri::WebviewWindow) {
+    let result = window.with_webview(|webview| {
+        use objc2_app_kit::{
+            NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSWindow,
+        };
+        // SAFETY: with_webview выполняет замыкание на главном потоке, а
+        // ns_window() — живой NSWindow этого окна.
+        unsafe {
+            let ns_window: &NSWindow = &*webview.ns_window().cast::<NSWindow>();
+            let dark = NSAppearance::appearanceNamed(NSAppearanceNameDarkAqua);
+            ns_window.setAppearance(dark.as_deref());
+        }
+    });
+    if let Err(e) = result {
+        log::warn!("тёмное оформление окна настроек: {e}");
     }
 }
 
@@ -577,4 +643,60 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::engine_label;
+
+    #[test]
+    fn engine_label_names() {
+        let label = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(
+            engine_label("parakeet-tdt-0.6b-v3"),
+            label("Parakeet TDT 0.6B v3", "NVIDIA")
+        );
+        assert_eq!(
+            engine_label("online:groq"),
+            label("Groq whisper-large-v3-turbo", "Online")
+        );
+        // неизвестный id показывается как есть
+        assert_eq!(engine_label("online:nope"), label("online:nope", ""));
+        assert_eq!(engine_label("no-such-model"), label("no-such-model", ""));
+    }
+
+    /// Окно настроек — нативное стекло: прозрачное окно, NSVisualEffectView
+    /// со скруглением 22 (= border-radius корня в settings.css) и
+    /// «светофоры» над боковой панелью. show_settings берёт всё из конфига.
+    #[test]
+    fn settings_window_is_glass() {
+        use tauri::utils::{config::Color, WindowEffect, WindowEffectState};
+        let config: tauri::Config =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        let w = config
+            .app
+            .windows
+            .iter()
+            .find(|w| w.label == "settings")
+            .expect("settings");
+        assert!(!w.create && w.transparent && w.decorations);
+        assert_eq!(w.background_color, Some(Color(0, 0, 0, 0)));
+        let tl = w
+            .traffic_light_position
+            .as_ref()
+            .expect("trafficLightPosition");
+        assert_eq!((tl.x, tl.y), (19.0, 28.0));
+        let fx = w.window_effects.as_ref().expect("windowEffects");
+        assert_eq!(fx.effects, vec![WindowEffect::UnderWindowBackground]);
+        assert_eq!(fx.state, Some(WindowEffectState::Active));
+        assert_eq!(fx.radius, Some(22.0));
+        assert!(
+            w.theme.is_none(),
+            "theme на macOS меняет оформление всего приложения"
+        );
+        assert!(
+            config.app.macos_private_api,
+            "прозрачное окно требует macOSPrivateApi"
+        );
+    }
 }

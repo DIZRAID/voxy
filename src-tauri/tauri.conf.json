@@ -21,8 +21,18 @@
         "maximizable": false,
         "visible": false,
         "center": true,
+        "decorations": true,
+        "shadow": true,
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "hiddenTitle": true,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "trafficLightPosition": { "x": 19, "y": 28 },
+        "windowEffects": {
+          "effects": ["underWindowBackground"],
+          "state": "active",
+          "radius": 22
+        }
       }
     ],
     "security": {

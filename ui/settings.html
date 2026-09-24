@@ -3,194 +3,256 @@
 <head>
   <meta charset="utf-8" />
   <title>Voxy</title>
+  <!-- Платформа и демо-режим — до стилей, чтобы не было вспышки: на macOS
+       окно прозрачное (нативное стекло), на Windows и в браузере — нет. -->
+  <script>
+    (function () {
+      var root = document.documentElement;
+      root.dataset.platform = navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "mac" : "win";
+      if (!window.__TAURI__) root.dataset.demo = "";
+      root.classList.add("booting");
+    })();
+  </script>
   <link rel="stylesheet" href="settings.css" />
 </head>
 <body>
-  <header data-tauri-drag-region></header>
+  <div class="window" id="window">
+    <!-- Верхняя полоса: перетаскивание окна; нативные «светофоры» лежат над ней. -->
+    <div class="drag-strip" data-tauri-drag-region></div>
 
-  <nav class="tabbar-wrap" data-tauri-drag-region>
-    <div class="tabbar" id="tabs">
-      <button class="tab active" data-tab="general">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        <span>General</span>
-      </button>
-      <button class="tab" data-tab="record">
-        <svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 21v-3"/></svg>
-        <span>Recording</span>
-      </button>
-      <button class="tab" data-tab="model">
-        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg>
-        <span>Model</span>
-      </button>
-      <button class="tab" data-tab="history">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-        <span>History</span>
-      </button>
-    </div>
-  </nav>
+    <aside class="sidebar">
+      <div class="nav" id="nav" role="tablist" aria-orientation="vertical" aria-label="Settings sections">
+        <div class="nav-hl" id="nav-hl" aria-hidden="true"></div>
+        <button class="nav-item" type="button" role="tab" id="nav-general" data-tab="general" aria-controls="tab-general" aria-selected="true" tabindex="0">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>General</span>
+        </button>
+        <button class="nav-item" type="button" role="tab" id="nav-record" data-tab="record" aria-controls="tab-record" aria-selected="false" tabindex="-1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 21v-3"/></svg>
+          <span>Recording</span>
+        </button>
+        <button class="nav-item" type="button" role="tab" id="nav-model" data-tab="model" aria-controls="tab-model" aria-selected="false" tabindex="-1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg>
+          <span>Model</span>
+        </button>
+        <button class="nav-item" type="button" role="tab" id="nav-history" data-tab="history" aria-controls="tab-history" aria-selected="false" tabindex="-1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <span>History</span>
+        </button>
+      </div>
 
-  <div id="perm-banner" class="perm-banner hidden">
-    <div class="perm-text">
-      <strong>Permissions required</strong>
-      <div class="perm-line"><span class="dot" id="perm-acc-dot"></span>Accessibility — pastes text with ⌘V</div>
-      <div class="perm-line"><span class="dot" id="perm-im-dot"></span>Input Monitoring — global hotkey</div>
-    </div>
-    <div class="perm-actions">
-      <button class="btn" id="open-access">Accessibility</button>
-      <button class="btn" id="open-input-mon">Input Monitoring</button>
-    </div>
+      <button class="status-card pending" type="button" id="status-card">
+        <span class="sc-status"><span class="sc-dot" id="status-dot"></span><span id="status-label">&nbsp;</span></span>
+        <span class="sc-name" id="status-name">&nbsp;</span>
+        <span class="sc-vendor" id="status-vendor">&nbsp;</span>
+      </button>
+      <div class="version" id="version">&nbsp;</div>
+    </aside>
+
+    <main class="content" id="content">
+      <div class="perm hidden" id="perm-banner" aria-live="polite">
+        <span class="perm-icon" aria-hidden="true">!</span>
+        <div class="perm-text">
+          <div class="perm-title">Permissions required</div>
+          <div class="perm-lines">
+            <span class="perm-line" title="Accessibility — pastes text with ⌘V"><span class="dot" id="perm-acc-dot"></span>Accessibility<span class="sr" id="perm-acc-sr"></span></span>
+            <span class="perm-line" title="Input Monitoring — global hotkey"><span class="dot" id="perm-im-dot"></span>Input Monitoring<span class="sr" id="perm-im-sr"></span></span>
+          </div>
+        </div>
+        <div class="perm-actions">
+          <button class="pill" type="button" id="open-access" aria-label="Open Accessibility settings">Accessibility</button>
+          <button class="pill" type="button" id="open-input-mon" aria-label="Open Input Monitoring settings">Input Monitoring</button>
+        </div>
+      </div>
+
+      <!-- GENERAL -->
+      <section id="tab-general" class="page enter" role="tabpanel" aria-labelledby="nav-general">
+        <div class="group">
+          <div class="row">
+            <div class="row-info">
+              <div class="row-title" id="hk-title">Hotkey</div>
+              <div class="row-sub">Hold to dictate</div>
+            </div>
+            <div class="row-ctl">
+              <span class="hk-chip" id="hk-chip" aria-live="polite">
+                <span class="hk-cap" id="hk-cap" aria-hidden="true">⌘</span>
+                <span id="hk-name">Right Command</span>
+              </span>
+              <!-- имя «Change Hotkey» / «Cancel Hotkey» следует за текстом кнопки -->
+              <button class="pill" type="button" id="hk-btn" aria-labelledby="hk-btn hk-title">Change</button>
+            </div>
+          </div>
+          <div class="sep"></div>
+          <div class="row">
+            <div class="row-info">
+              <div class="row-title" id="mic-title">Microphone</div>
+              <div class="row-sub">Recording source</div>
+            </div>
+            <div class="dd" id="mic-anchor">
+              <button class="pill dd-trigger" type="button" id="mic-trigger" aria-labelledby="mic-title mic-label">
+                <span class="dd-label" id="mic-label">System default</span>
+                <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9l5-5 5 5M7 15l5 5 5-5"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="row">
+            <div class="row-info">
+              <div class="row-title" id="sounds-title">Sounds</div>
+              <div class="row-sub">Recording start &amp; stop cues</div>
+            </div>
+            <button class="switch" type="button" role="switch" id="sounds-toggle" aria-checked="false" aria-labelledby="sounds-title"><span class="switch-knob"></span></button>
+          </div>
+          <div class="sep"></div>
+          <div class="row">
+            <div class="row-info">
+              <div class="row-title" id="autostart-title">Launch at login</div>
+              <div class="row-sub">Start Voxy automatically</div>
+            </div>
+            <button class="switch" type="button" role="switch" id="autostart-toggle" aria-checked="false" aria-labelledby="autostart-title"><span class="switch-knob"></span></button>
+          </div>
+        </div>
+      </section>
+
+      <!-- RECORDING -->
+      <section id="tab-record" class="page hidden" role="tabpanel" aria-labelledby="nav-record">
+        <div class="group pad">
+          <div class="row-head center">
+            <div class="row-info">
+              <div class="row-title" id="mode-title">Recording mode</div>
+              <div class="row-sub">How the hotkey behaves</div>
+            </div>
+            <div class="seg" id="mode-seg" role="radiogroup" aria-labelledby="mode-title">
+              <div class="seg-thumb" id="seg-thumb" aria-hidden="true"></div>
+              <button type="button" role="radio" data-mode="ptt" aria-checked="true" tabindex="0">Hold</button>
+              <button type="button" role="radio" data-mode="toggle" aria-checked="false" tabindex="-1">Toggle</button>
+              <button type="button" role="radio" data-mode="dynamic" aria-checked="false" tabindex="-1">Dynamic</button>
+            </div>
+          </div>
+          <div class="mode-hint" id="mode-hint">Hold the key while you speak</div>
+        </div>
+
+        <div class="group">
+          <div class="slider-block">
+            <div class="row-head">
+              <div class="row-info">
+                <div class="row-title" id="minlen-title">Minimum duration</div>
+                <div class="row-sub">Shorter presses are ignored as accidental</div>
+              </div>
+              <div class="slider-val" id="minlen-val">300 ms</div>
+            </div>
+            <div class="slider" id="minlen-slider" role="slider" tabindex="0" aria-labelledby="minlen-title" aria-valuemin="100" aria-valuemax="1000" aria-valuenow="300" data-min="100" data-max="1000" data-step="50">
+              <div class="slider-track"></div>
+              <div class="slider-fill"></div>
+              <div class="slider-knob"></div>
+            </div>
+            <div class="ticks" aria-hidden="true"><span>100 ms</span><span>1 s</span></div>
+          </div>
+          <div class="sep"></div>
+          <div class="slider-block">
+            <div class="row-head">
+              <div class="row-info">
+                <div class="row-title" id="maxlen-title">Maximum length</div>
+                <div class="row-sub">Recording stops and transcribes at this limit</div>
+              </div>
+              <div class="slider-val" id="maxlen-val">120 s</div>
+            </div>
+            <div class="slider" id="maxlen-slider" role="slider" tabindex="0" aria-labelledby="maxlen-title" aria-valuemin="15" aria-valuemax="300" aria-valuenow="120" data-min="15" data-max="300" data-step="15">
+              <div class="slider-track"></div>
+              <div class="slider-fill"></div>
+              <div class="slider-knob"></div>
+            </div>
+            <div class="ticks" aria-hidden="true"><span>15 s</span><span>5 min</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- MODEL -->
+      <section id="tab-model" class="page hidden" role="tabpanel" aria-labelledby="nav-model">
+        <div id="model-lists" class="hidden">
+          <div id="installed-block" class="block">
+            <div class="sec-head">
+              <span class="sec-title" id="installed-title">Installed</span>
+              <span class="sec-hint">Click a model to use it</span>
+            </div>
+            <div class="group list" id="installed-list" role="radiogroup" aria-labelledby="installed-title"></div>
+          </div>
+
+          <div id="available-block" class="block">
+            <div class="sec-head">
+              <span class="sec-title" id="available-title">Available</span>
+              <span class="sec-hint">Private · works offline</span>
+            </div>
+            <div class="group list" id="available-list" role="list" aria-labelledby="available-title"></div>
+          </div>
+
+          <div class="block online-block">
+            <div class="sec-head">
+              <span class="sec-title" id="online-title">Online</span>
+              <span class="sec-hint">Your own API key · audio is sent to the provider</span>
+            </div>
+            <div class="group list" id="online-list" role="radiogroup" aria-labelledby="online-title"></div>
+          </div>
+        </div>
+
+        <div class="group unload-group">
+          <div class="row">
+            <div class="row-info">
+              <div class="row-title" id="unload-title">Free memory when idle</div>
+              <div class="row-sub">Unload the local model after a pause; it reloads while you speak</div>
+            </div>
+            <div class="dd" id="unload-anchor">
+              <button class="pill dd-trigger nowrap" type="button" id="unload-trigger" aria-labelledby="unload-title unload-label">
+                <span id="unload-label">After 5 min</span>
+                <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9l5-5 5 5M7 15l5 5 5-5"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Раздела нет в макете (функция старой версии): он стоит после
+             нарисованной раскладки, чтобы не сдвигать её. -->
+        <div id="discovered-block" class="block discovered-block hidden">
+          <div class="sec-head">
+            <span class="sec-title" id="discovered-title">New releases</span>
+            <button type="button" class="link" id="discovered-link">View all</button>
+          </div>
+          <div class="group list" id="discovered-list" role="list" aria-labelledby="discovered-title"></div>
+          <div class="sec-note">Found automatically. Voxy rates and adds new models in app updates.</div>
+        </div>
+      </section>
+
+      <!-- HISTORY -->
+      <section id="tab-history" class="page hidden" role="tabpanel" aria-labelledby="nav-history">
+        <div class="hist-head">
+          <span class="hist-count" id="history-count">0 entries</span>
+          <div class="hist-actions">
+            <div class="dd" id="keep-anchor">
+              <button class="pill dd-trigger" type="button" id="keep-trigger">
+                <span id="keep-label">Keep: 7 days</span>
+                <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9l5-5 5 5M7 15l5 5 5-5"/></svg>
+              </button>
+            </div>
+            <button class="danger-btn" type="button" id="history-clear">Clear</button>
+          </div>
+        </div>
+        <div id="history-list"></div>
+        <div class="hist-empty hidden" id="history-empty">
+          <div class="empty-circle" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11v.5a6.5 6.5 0 0 0 13 0V11M12 21v-3"/></svg>
+          </div>
+          <div class="empty-title">No transcriptions yet</div>
+          <div class="empty-sub" id="empty-sub">Hold the hotkey and speak — entries will appear here</div>
+        </div>
+      </section>
+    </main>
+
+    <div class="title-bar" aria-hidden="true"><div class="page-title" id="page-title">General</div></div>
+    <!-- объявления для экранного диктора (например, «Copied») -->
+    <div class="sr" id="live" aria-live="polite"></div>
   </div>
-
-  <main>
-    <!-- GENERAL -->
-    <section id="tab-general" class="tab-page">
-      <div class="panel">
-        <div class="row">
-          <div class="row-info">
-            <div class="row-title">Hotkey</div>
-            <div class="row-sub">Hold to dictate</div>
-          </div>
-          <div class="row-ctl">
-            <span class="keycap" id="hotkey-label">⌘ Right Command</span>
-            <button class="btn" id="hotkey-change">Change</button>
-          </div>
-        </div>
-        <div class="row">
-          <div class="row-info">
-            <div class="row-title">Microphone</div>
-            <div class="row-sub">Recording source</div>
-          </div>
-          <div class="row-ctl dd-anchor" id="mic-anchor">
-            <button class="btn dd-trigger" id="mic-trigger">
-              <span id="mic-label">System default</span>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
-            </button>
-          </div>
-        </div>
-        <div class="row">
-          <div class="row-info">
-            <div class="row-title">Sounds</div>
-            <div class="row-sub">Recording start &amp; stop cues</div>
-          </div>
-          <label class="switch"><input type="checkbox" id="sounds-toggle" /><span></span></label>
-        </div>
-        <div class="row">
-          <div class="row-info">
-            <div class="row-title">Launch at login</div>
-            <div class="row-sub">Start Voxy automatically</div>
-          </div>
-          <label class="switch"><input type="checkbox" id="autostart-toggle" /><span></span></label>
-        </div>
-      </div>
-    </section>
-
-    <!-- RECORDING -->
-    <section id="tab-record" class="tab-page hidden">
-      <div class="panel">
-        <div class="row">
-          <div class="row-info">
-            <div class="row-title">Recording mode</div>
-            <div class="row-sub">How the hotkey behaves</div>
-          </div>
-          <div class="segmented" id="mode-seg">
-            <div class="seg-thumb"></div>
-            <button data-mode="ptt">Hold</button>
-            <button data-mode="toggle">Toggle</button>
-            <button data-mode="dynamic">Dynamic</button>
-          </div>
-        </div>
-        <div class="row srow">
-          <div class="srow-head">
-            <div class="row-info">
-              <div class="row-title">Minimum duration</div>
-              <div class="row-sub">Shorter presses are ignored as accidental</div>
-            </div>
-            <div class="sval" id="minlen-val">300 ms</div>
-          </div>
-          <div class="slider" id="minlen-slider" data-min="100" data-max="1000" data-step="50">
-            <div class="fill"></div>
-            <div class="knob"></div>
-          </div>
-        </div>
-        <div class="row srow">
-          <div class="srow-head">
-            <div class="row-info">
-              <div class="row-title">Maximum length</div>
-              <div class="row-sub">Recording stops and transcribes at this limit</div>
-            </div>
-            <div class="sval" id="maxlen-val">120 s</div>
-          </div>
-          <div class="slider" id="maxlen-slider" data-min="15" data-max="300" data-step="15">
-            <div class="fill"></div>
-            <div class="knob"></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- MODEL -->
-    <section id="tab-model" class="tab-page hidden">
-      <div class="models-scroll">
-        <div class="models-head">
-          <span class="models-title">On this Mac</span>
-          <span class="models-hint">Private · works offline</span>
-        </div>
-        <div id="local-models"></div>
-
-        <div class="models-head">
-          <span class="models-title">Online</span>
-          <span class="models-hint">Your own API key · audio is sent to the provider</span>
-        </div>
-        <div id="online-providers"></div>
-
-        <div id="discovered-block" class="hidden">
-          <div class="models-head">
-            <span class="models-title">New releases</span>
-            <button type="button" class="link-btn" id="discovered-link">View all</button>
-          </div>
-          <div class="models-hint discovered-note">Found automatically. Voxy rates and adds new models in app updates.</div>
-          <div id="discovered"></div>
-        </div>
-
-        <div class="model-row unload-row">
-          <div>
-            <div class="row-title">Free memory when idle</div>
-            <div class="row-sub">Unload the local model after a pause; it reloads while you speak</div>
-          </div>
-          <div class="dd-anchor" id="unload-anchor">
-            <button class="btn dd-trigger" id="unload-trigger">
-              <span id="unload-label">After 5 min</span>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
-            </button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- HISTORY -->
-    <section id="tab-history" class="tab-page hidden">
-      <div class="hist-head">
-        <span class="hist-count" id="history-count">0 entries</span>
-        <div class="hist-actions">
-          <div class="dd-anchor" id="keep-anchor">
-            <button class="btn dd-trigger" id="keep-trigger">
-              <span id="keep-label">Keep: 7 days</span>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
-            </button>
-          </div>
-          <button class="btn danger-hover" id="history-clear">Clear</button>
-        </div>
-      </div>
-      <div class="hist-list" id="history-list"></div>
-      <div class="hist-empty hidden" id="history-empty">
-        <div class="empty-circle">
-          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11v.5a6.5 6.5 0 0 0 13 0V11M12 21v-3"/></svg>
-        </div>
-        <div class="empty-title">No transcriptions yet</div>
-        <div class="empty-sub">Hold ⌘ and speak — entries will appear here</div>
-      </div>
-    </section>
-  </main>
 
   <script src="settings.js"></script>
 </body>

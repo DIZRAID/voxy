@@ -105,7 +105,7 @@ Notes:
 
 1. Voxy's icon appears in the menu bar. Its menu has Settings… and Quit Voxy. If you can't see the icon (on a MacBook with a notch, a full menu bar can hide it), open Voxy again from `/Applications` to bring up Settings.
 2. macOS asks for Accessibility and Input Monitoring. The Settings window opens with a banner that shows which permissions are still missing (see [Permissions](#permissions)).
-3. If no model is installed yet, the default Parakeet TDT 0.6B v3 (670 MB) starts downloading. Progress appears in Settings → Model. Parakeet covers 25 European languages. For other languages (Qwen3-ASR for Chinese, Japanese, Korean, Arabic or Hindi; Whisper for 99 languages), or for a smaller download, click Cancel on the running download, click Download on the model you want, then click Use when it finishes (downloading a model does not switch to it).
+3. If no model is installed yet, the default Parakeet TDT 0.6B v3 (670 MB) starts downloading. Progress appears in Settings → Model. Parakeet covers 25 European languages. For other languages (Qwen3-ASR for Chinese, Japanese, Korean, Arabic or Hindi; Whisper for 99 languages), or for a smaller download, stop the running download with the round button next to its progress, click Get next to the model you want, then click that model under Installed when it finishes (downloading a model does not switch to it).
 4. macOS asks for microphone access the first time you record. Click Allow, then dictate again.
 
 ## Permissions
@@ -118,7 +118,7 @@ macOS: System Settings → Privacy & Security.
 | Input Monitoring | The global hotkey. Voxy uses a listen-only event tap, so keystrokes are observed but never blocked or changed |
 | Microphone | Recording; macOS asks the first time you record |
 
-The hotkey starts working once both Accessibility and Input Monitoring are granted. You do not need to restart Voxy, because it checks every 2 seconds. The buttons in the Settings banner open the matching System Settings pages.
+The hotkey starts working once both Accessibility and Input Monitoring are granted. You do not need to restart Voxy, because it checks every 2 seconds. The button in the Settings banner opens the System Settings page for the next missing permission: Accessibility first, then Input Monitoring.
 
 **After every rebuild.** Builds are ad-hoc signed, so each new build has a different code signature. macOS keeps the old Accessibility and Input Monitoring entries, but they no longer match the new build: the switch still looks on, yet the permission does not work. To fix this, quit the running Voxy (menu bar icon → Quit Voxy). Then go to each of the two lists, select Voxy, remove it with the − button, open the new build and grant the permissions (or add the app back with +). For the same reason, macOS may ask whether Voxy can read a saved API key from the Keychain. Choose Always Allow.
 
@@ -228,7 +228,7 @@ __islandDebug.setState("idle")
 
 **Every recording ends with "Didn't catch that".** Check System Settings → Privacy & Security → Microphone: Voxy must be turned on there (with `cargo tauri dev`, your terminal app). Also check the input device in Settings → General → Microphone.
 
-**A model download fails.** The error appears under the model in Settings → Model. Click Download again to resume from where it stopped. If a file fails its checksum, it is deleted and must be downloaded again. Voxy downloads models directly from huggingface.co (Parakeet TDT 110M from github.com) and does not use the macOS proxy settings. If those sites are blocked on your network, use a system-wide VPN.
+**A model download fails.** The error appears under the model in Settings → Model. Click Get again to resume from where it stopped. If a file fails its checksum, it is deleted and must be downloaded again. Voxy downloads models directly from huggingface.co (Parakeet TDT 110M from github.com) and does not use the macOS proxy settings. If those sites are blocked on your network, use a system-wide VPN.
 
 **The build fails while downloading sherpa-onnx.** The build script of the `sherpa-onnx-sys` crate downloads a prebuilt static library from GitHub. The build honors `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`. If GitHub is still unreachable, download the archive yourself and set `SHERPA_ONNX_ARCHIVE_DIR` to the folder that contains it. The file name must match exactly: `sherpa-onnx-v<version>-osx-arm64-static-lib.tar.bz2` on Apple Silicon, `sherpa-onnx-v<version>-osx-x64-static-lib.tar.bz2` on Intel Macs (untested), or `sherpa-onnx-v<version>-win-x64-static-MT-Release-lib.tar.bz2` on Windows x64. `<version>` is the `sherpa-onnx-sys` version in `src-tauri/Cargo.lock` (1.13.8 at the time of writing). Use an absolute path: the build script does not run in your current directory.
 

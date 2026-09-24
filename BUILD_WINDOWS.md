@@ -170,7 +170,9 @@ These come from reading the code; nobody has seen them on a real machine yet.
 - The tray icon is a black glyph drawn as a macOS "template" image, which macOS
   recolors to match the menu bar. Windows shows it as is, so it may be hard to
   see on a dark taskbar.
-- Some UI text still says "Mac" (for example "On this Mac" on the Model tab).
+- The Settings window has no glass effect on Windows. It is drawn opaque under
+  the standard title bar (the macOS window uses native vibrancy, which the
+  Windows port does not have yet).
 - Pasting into apps that run as administrator: Windows (UIPI) blocks
   synthetic input from a normal-privilege process into elevated windows.
   Depending on how Windows reports this, either nothing is pasted, or the
