@@ -347,11 +347,11 @@ mod url {
 
 /// Логи в файл (macOS: ~/Library/Logs/Voxy.log, Windows:
 /// %LOCALAPPDATA%\Voxy.log) — диагностика без запуска через пайпы.
-/// VOICE_LOG_STDERR=1 — в stderr.
+/// VOXY_LOG_STDERR=1 — в stderr.
 fn init_logging() {
     let mut builder =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-    if std::env::var("VOICE_LOG_STDERR").is_err() {
+    if std::env::var("VOXY_LOG_STDERR").is_err() {
         let path = if cfg!(target_os = "windows") {
             std::env::var("LOCALAPPDATA")
                 .ok()

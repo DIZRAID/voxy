@@ -141,7 +141,7 @@ function setState(state, message, maxS) {
   }
 }
 
-// Клик по пилюле во время записи — показать кнопку Cancel на 3 c.
+// Клик по пилюле во время записи — показать кнопку Cancel на 4 c.
 pill.addEventListener("click", () => {
   if (island.dataset.state !== "recording") return;
   if (pill.classList.contains("cancel-armed")) return;

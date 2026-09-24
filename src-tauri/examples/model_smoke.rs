@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
-use voice_lib::{asr::Transcriber, models};
+use voxy_lib::{asr::Transcriber, models};
 
 fn main() {
     let mut args = std::env::args().skip(1);

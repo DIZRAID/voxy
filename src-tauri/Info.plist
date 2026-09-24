@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Voxy records speech from the microphone while the hotkey is held to turn it into text. Audio is processed entirely on this device.</string>
+	<string>Voxy records from the microphone while the hotkey is held and turns your speech into text. With a local model the audio never leaves this computer; with an online provider you choose, it is sent to that provider.</string>
 	<key>LSUIElement</key>
 	<true/>
 </dict>
