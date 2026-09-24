@@ -1,0 +1,144 @@
+# Build release bundles and attach them to a DRAFT GitHub release.
+#
+# Trigger: push a tag named v<version>, where <version> is "version" in
+# src-tauri/tauri.conf.json (e.g. v0.1.0), or run the workflow by hand.
+# Either way the release is named after the tauri.conf.json version. Nothing is
+# published automatically: review the draft on GitHub and publish it yourself.
+#
+# Output:
+#   macOS (Apple Silicon): .dmg and .app (packed as .app.tar.gz)
+#   Windows (x64):         NSIS installer (-setup.exe)
+#
+# The project has no package.json, so tauri-action installs the Tauri CLI
+# itself (npm install -g @tauri-apps/cli@v2) and runs `tauri build` in
+# projectPath. Nothing else is needed for that.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Cheap check on Linux before the expensive macOS/Windows builds start.
+  check-version:
+    name: Check version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compare tag with app version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          conf=$(jq -r .version src-tauri/tauri.conf.json)
+          crate=$(awk -F'"' '/^version = / { print $2; exit }' src-tauri/Cargo.toml)
+          echo "tauri.conf.json: $conf, Cargo.toml: $crate, ref: $GITHUB_REF_NAME"
+          if [ "$crate" != "$conf" ]; then
+            echo "::warning::Cargo.toml version ($crate) differs from tauri.conf.json ($conf); bundles use $conf"
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$conf" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $conf in src-tauri/tauri.conf.json (expected v$conf)"
+            exit 1
+          fi
+          # With releaseDraft: true, tauri-action only reuses a draft release. If
+          # this version is already published, it would fail after the build.
+          if is_draft=$(gh release view "v$conf" --json isDraft --jq .isDraft 2>/dev/null) && [ "$is_draft" = "false" ]; then
+            echo "::error::Release v$conf is already published. Bump the version in src-tauri/tauri.conf.json first."
+            exit 1
+          fi
+
+  build:
+    name: ${{ matrix.name }}
+    needs: check-version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+            # bundle.targets in tauri.conf.json has no "dmg", so ask for it here.
+            args: --target aarch64-apple-darwin --bundles app,dmg
+            timeout: 60
+          - name: Windows (x64)
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: --target x86_64-pc-windows-msvc --bundles nsis
+            timeout: 90
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # No Rust cache here on purpose: releases are rare and are built from
+      # scratch. The sherpa-onnx build script downloads its static libraries.
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Windows: link the VC++ runtime statically, so the app starts on PCs
+          # without the VC++ Redistributable (the installer doesn't ship it).
+          # The locked tauri-build (2.6.3) only reads this variable. Tauri CLI
+          # 2.11 sets it by itself, but the next minor CLI release stops doing
+          # that in favour of the build.windows.staticVCRuntime config key,
+          # which tauri-build 2.6.3 doesn't read. macOS builds ignore it.
+          STATIC_VCRUNTIME: "true"
+
+          # Code signing is not set up yet, so the bundles are unsigned.
+          # Apple signing and notarization (macOS job only; add these as
+          # repository secrets, then uncomment):
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}                 # base64 of the Developer ID .p12
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}       # "Developer ID Application: Name (TEAMID)"
+          # Notarization with an Apple ID and an app-specific password:
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # ...or with an App Store Connect API key instead:
+          # APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          # APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}                         # key ID
+          # APPLE_API_KEY_PATH: path to AuthKey_<key ID>.p8, written by an earlier step
+          #
+          # Signing turns on the hardened runtime (bundle.macOS.hardenedRuntime
+          # defaults to true). Under it the microphone needs the
+          # com.apple.security.device.audio-input entitlement, set through
+          # bundle.macOS.entitlements in tauri.conf.json.
+          #
+          # Windows signing is configured in tauri.conf.json
+          # (bundle.windows.certificateThumbprint or bundle.windows.signCommand),
+          # not through environment variables.
+        with:
+          projectPath: src-tauri
+          args: ${{ matrix.args }}
+          tagName: v__VERSION__
+          releaseName: Voxy v__VERSION__
+          releaseBody: |
+            Automated build. Not code-signed or notarized.
+
+            - macOS 14 or later, Apple Silicon: the `.dmg`
+            - Windows 10/11, x64: the `-setup.exe` installer (the Windows port has not been tested yet)
+          releaseDraft: true
+          prerelease: true
+          # No updater is configured, so there is no latest.json to publish.
+          uploadUpdaterJson: false
+          # Re-runs `tauri build` once if it fails (e.g. a flaky hdiutil during
+          # .dmg creation); compiled code is reused, so a retry is quick.
+          retryAttempts: 1

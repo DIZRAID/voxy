@@ -1,3 +1,48 @@
+# Rust / Tauri build output (Cargo.lock stays committed: this is an app)
 src-tauri/target/
 src-tauri/gen/
+**/*.rs.bk
+*.pdb
+
+# macOS
 .DS_Store
+._*
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editors and IDEs (shared VS Code settings stay in the repo)
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.swp
+*~
+
+# Logs
+*.log
+
+# Test recordings and downloaded models (model_smoke can write them anywhere)
+*.wav
+*.onnx
+*.tar.bz2
+*.part
+/models/
+
+# Node.js (the UI has no build step, but tools may create this)
+node_modules/
+
+# Local environment and signing secrets
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+private_keys/
+
+# Claude Code personal files (.claude/launch.json is shared)
+.claude/*.local.json
+CLAUDE.local.md

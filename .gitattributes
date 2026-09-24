@@ -1,0 +1,42 @@
+# Text files use LF in the repository and in every checkout, Windows included
+# (rustc, Cargo and Tauri all read LF files there). This keeps files embedded
+# at compile time, such as src-tauri/src/catalog.json, identical on every OS.
+* text=auto eol=lf
+
+# Windows scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Language-aware diff hunks (built-in git drivers).
+*.rs   text diff=rust
+*.md   text diff=markdown
+*.html text diff=html
+*.css  text diff=css
+
+# Binary files: no line-ending conversion, no text diffs.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.icns  binary
+*.ico   binary
+*.wav   binary
+*.mp3   binary
+*.onnx  binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.bz2   binary
+*.tar   binary
+*.dmg   binary
+*.exe   binary
+*.dll   binary
+*.dylib binary
+*.a     binary
+*.lib   binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary

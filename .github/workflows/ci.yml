@@ -1,0 +1,143 @@
+# Build Voxy on macOS (Apple Silicon) and Windows (x64) and run its unit tests.
+# On Windows the unit tests are only compiled for now (see "Unit tests").
+#
+# Kept cheap on purpose: the repository is private, and GitHub bills macOS
+# runner minutes at 10x and Windows at 2x. So: debug profile only (the release
+# profile uses full LTO and is much slower), no debug info, a Rust cache, runs
+# only when code changes, and a newer push cancels the running one.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src-tauri/**"
+      - "ui/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "src-tauri/**"
+      - "ui/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # No debug info in CI builds: faster compile and link, much smaller cache.
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-latest is Apple Silicon (arm64). macos-14 is deprecated.
+          - name: macOS (arm64)
+            os: macos-latest
+            timeout: 30
+            sherpa_archive: osx-arm64-static-lib
+            test_args: ""
+          # The Windows port has never been compiled before this job.
+          - name: Windows (x64)
+            os: windows-latest
+            timeout: 45
+            sherpa_archive: win-x64-static-MT-Release-lib
+            # Build and link the test binary without running it.
+            test_args: --no-run
+    defaults:
+      run:
+        working-directory: src-tauri
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # Only main writes the cache; PRs reuse it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Keep compiled dependencies even when our own code fails to build,
+          # so the next attempt (e.g. fixing the Windows port) starts warm.
+          cache-on-failure: true
+
+      # sherpa-onnx-sys normally downloads its static libraries into
+      # target/sherpa-onnx-prebuilt/. rust-cache deletes files there before
+      # saving but keeps the build-script output that points at them, so the
+      # next cached run would fail to link. Put the libraries outside target/
+      # and pass them through SHERPA_ONNX_LIB_DIR, which the build script
+      # supports. Archive names follow archive_name() in sherpa-onnx-sys's
+      # build.rs (default "static" feature).
+      - name: Fetch sherpa-onnx static libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(awk -F'"' '/^name = "sherpa-onnx-sys"/ { getline; print $2; exit }' Cargo.lock)
+          if [ -z "$version" ]; then
+            echo "::error::sherpa-onnx-sys not found in src-tauri/Cargo.lock"
+            exit 1
+          fi
+          name="sherpa-onnx-v${version}-${{ matrix.sherpa_archive }}"
+          url="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${version}/${name}.tar.bz2"
+          echo "Downloading $url"
+          mkdir -p "$RUNNER_TEMP/sherpa-onnx"
+          cd "$RUNNER_TEMP/sherpa-onnx"
+          curl -fsSL --retry 3 -o archive.tar.bz2 "$url"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # Windows' own bsdtar unpacks .tar.bz2 without an external bzip2.
+            /c/Windows/System32/tar.exe -xf archive.tar.bz2
+          else
+            tar -xf archive.tar.bz2
+          fi
+          rm archive.tar.bz2
+          ls -l "$name/lib"
+          libdir="$PWD/$name/lib"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            libdir=$(cygpath -w "$libdir")
+          fi
+          echo "SHERPA_ONNX_LIB_DIR=$libdir" >> "$GITHUB_ENV"
+
+      - name: Build (debug)
+        run: cargo build --locked
+
+      # Tests marked #[ignore] need the network and are skipped here.
+      # On Windows the test binary is only compiled and linked (--no-run).
+      # tauri-build embeds the Common Controls v6 manifest in the app binary
+      # only, and without it a test binary that imports comctl32 functions
+      # through tao/muda/wry dies at load with 0xC0000139 before any test runs
+      # (tauri-apps/tauri#13419). Running them on Windows needs build.rs to
+      # embed that manifest in test binaries too.
+      - name: Unit tests
+        run: cargo test --locked --lib ${{ matrix.test_args }}
+
+      - name: Summary
+        shell: bash
+        env:
+          TEST_ARGS: ${{ matrix.test_args }}
+        run: |
+          bin=target/debug/voxy
+          if [ "$RUNNER_OS" = "Windows" ]; then bin="$bin.exe"; fi
+          ls -l "$bin"
+          if [ "$TEST_ARGS" = "--no-run" ]; then
+            tests="unit tests compiled, not run"
+          else
+            tests="unit tests passed"
+          fi
+          {
+            echo "### ${{ matrix.name }}"
+            echo "Debug build linked (\`src-tauri/$bin\`, $(du -h "$bin" | cut -f1)); $tests."
+          } >> "$GITHUB_STEP_SUMMARY"
