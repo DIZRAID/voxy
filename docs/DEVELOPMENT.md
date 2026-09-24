@@ -2,8 +2,9 @@
 
 [Back to the README](../README.md)
 
-This page is for people who want to run Voxy from source, change it or add a model. If you only want to build and install the app, the [README](../README.md#build-from-source) has everything you need.
+This page is for people who want to build Voxy from source, change it or add a model. If you only want to use the app, the [README](../README.md#install) installs a prebuilt release with one command.
 
+- [Build from source](#build-from-source)
 - [Stack](#stack)
 - [Project layout](#project-layout)
 - [Running and testing](#running-and-testing)
@@ -11,7 +12,44 @@ This page is for people who want to run Voxy from source, change it or add a mod
 - [Previewing the UI without Tauri](#previewing-the-ui-without-tauri)
 - [Adding a model to the catalog](#adding-a-model-to-the-catalog)
 - [Platform-specific code](#platform-specific-code)
-- [CI and releases](#ci-and-releases)
+- [CI](#ci)
+- [Releases](#releases)
+
+## Build from source
+
+You need macOS 14 or later and a few GB of free disk space in `src-tauri/target`. Voxy is developed and tested on Apple Silicon; building on an Intel Mac has not been tested. Install three things:
+
+1. Xcode Command Line Tools: `xcode-select --install`
+2. Rust 1.88 or newer from [rustup.rs](https://rustup.rs). If Rust is already installed, run `rustup update stable`.
+3. Tauri CLI v2:
+   ```sh
+   cargo install tauri-cli --version "^2.0.0" --locked
+   ```
+
+Node.js and npm are not needed: the UI in `ui/` is plain HTML, CSS and JavaScript with no build step.
+
+Build Voxy and copy it to `/Applications`:
+
+```sh
+git clone https://github.com/DIZRAID/voxy.git
+cd voxy/src-tauri
+cargo tauri build
+cp -R target/release/bundle/macos/Voxy.app /Applications/
+open /Applications/Voxy.app
+```
+
+Good to know:
+
+- The first build downloads a prebuilt static sherpa-onnx library (with ONNX Runtime, about 20 MB) from the sherpa-onnx GitHub releases. If that download fails, see [Troubleshooting](TROUBLESHOOTING.md#the-build-fails-while-downloading-sherpa-onnx).
+- Release builds use full LTO, so the final link step takes a while.
+- Debug builds from `cargo tauri dev` and `cargo test` take more disk space on top of the release build. `cargo clean` (run in `src-tauri/`) frees it.
+- **Gatekeeper.** A build you make on your own Mac opens normally. A plain `cargo tauri build` does not sign the bundle as a whole (only the linker signs the executable), so a copy you send to someone else opens as "damaged" on their Mac, with no Open Anyway. Share a release instead, or build with `APPLE_SIGNING_IDENTITY=-` as [`release.yml`](../.github/workflows/release.yml) does.
+
+### Installing a new build
+
+Quit the running Voxy first (menu bar icon → Quit Voxy). Only one copy of Voxy can run, so while the old one is running, the new build does not start. Delete the old `/Applications/Voxy.app`, copy the new one and open it.
+
+Local builds are ad-hoc signed, so every build has a different code signature and the old Accessibility and Input Monitoring entries stop working. Reset them with the two `tccutil` commands in [After an update](../README.md#after-an-update), then grant the permissions again.
 
 ## Stack
 
@@ -47,24 +85,26 @@ src-tauri/
     model_smoke.rs  end-to-end model check without the UI
   tauri.conf.json   app config (product name, bundle identifier, minimum macOS version)
   Info.plist        microphone usage text; menu-bar-only app (no Dock icon)
+  Entitlements.plist  microphone entitlement for signed (hardened runtime) builds
 ui/
   settings.html, settings.css, settings.js   Settings window
   island.html, island.css, island.js         the island
 docs/
   DEVELOPMENT.md    this page
   TROUBLESHOOTING.md
-  images/           screenshots used in the README
-  marketing/        how those screenshots are rendered
+  images/           README images and the repository's social card
+  marketing/        how those images are rendered
 .github/workflows/  CI (build and unit tests on macOS; build and test compile on Windows) and release builds
-README.md           the README (README.ru.md in Russian)
-BUILD_WINDOWS.md    Windows build guide (BUILD_WINDOWS.ru.md in Russian)
+install.sh          one-command installer: installs, updates or removes the latest release
+README.md           the README
+BUILD_WINDOWS.md    Windows build guide
 ```
 
 ## Running and testing
 
-Prerequisites are the same as for [building from source](../README.md#build-from-source). All commands run from `src-tauri/`.
+Prerequisites are the same as for [building from source](#build-from-source). All commands run from `src-tauri/`.
 
-Quit the installed Voxy (menu bar icon → Quit Voxy) before you run `cargo tauri dev`. Only one copy can run: if the installed one is running, the dev build just opens the installed copy's Settings window and exits. Dev and installed builds share the same bundle identifier, so they also share settings, history, downloaded models and API keys.
+Quit the installed Voxy (menu bar icon → Quit Voxy) before you run `cargo tauri dev`. Only one copy can run: if the installed one is running, the dev build just opens the installed copy's Settings window and exits. Dev and installed builds share the same bundle identifier, so they also share settings, history, downloaded models, API keys and privacy entries. `install.sh` treats a local build as another copy of Voxy: an install stops it if it is running and resets the permissions it may hold, and `--uninstall` deletes the shared data too (add `--keep-data` to keep it).
 
 ```sh
 cargo tauri dev                          # run the app in development mode
@@ -128,7 +168,7 @@ __islandDebug.setState("idle")
 __islandDebug.applyMetrics({ has_notch: true, notch_w: 190, notch_h: 34, bar_h: 36 })  // notch geometry
 ```
 
-**README screenshots.** The images in `docs/images/` are rendered from these demo pages with headless Chrome, not captured from the real screen, so the Settings window shows the demo's CSS glass rather than the native material. To re-render them, run `python3 docs/marketing/render.py` (or name specific shots, e.g. `python3 docs/marketing/render.py hero model`) from the repository root; it needs Google Chrome and Pillow. The scenes are built in [`docs/marketing/compose.js`](marketing/compose.js). `social-preview.png` is the repository's social card: upload it under Settings → General → Social preview on GitHub.
+**README images.** `docs/images/` holds three images: `hero.png` and `island.png`, which the README shows, and `social-preview.png`, the repository's social card (upload it under Settings → General → Social preview on GitHub). They are rendered from these demo pages with headless Chrome, not captured from the real screen, so the Settings window shows the demo's CSS glass rather than the native material. To re-render all three, run `python3 docs/marketing/render.py` from the repository root (or name specific shots, e.g. `python3 docs/marketing/render.py hero`); it needs Google Chrome and Pillow. The scenes are built in [`docs/marketing/compose.js`](marketing/compose.js). It also has scenes of single Settings tabs (`model`, `general`, `recording`, `history`); the README no longer uses them, and they are rendered only when you name them.
 
 ## Adding a model to the catalog
 
@@ -142,7 +182,30 @@ Named keys (modifiers, Caps Lock, F1–F19, Home, End, Page Up, Page Down, Inser
 
 The Windows port has not been run on real hardware yet. See [BUILD_WINDOWS.md](../BUILD_WINDOWS.md) for build steps, the differences from macOS and a testing checklist.
 
-## CI and releases
+## CI
 
-- [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main` and on pull requests when they change `src-tauri/`, `ui/` or the workflow itself (docs-only changes don't trigger it), and can be started by hand. It makes a debug build and runs the unit tests on macOS (Apple Silicon). On Windows (x64) it builds and compiles the unit tests without running them.
-- [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs when you push a tag `v<version>` matching `version` in `src-tauri/tauri.conf.json` (or by hand). It builds a `.dmg` and an `.app` (packed as `.app.tar.gz`) for Apple Silicon and an NSIS installer for Windows x64, and attaches them to a draft GitHub release that you review and publish yourself. Code signing and notarization are not set up yet, so these bundles are unsigned.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main` and on pull requests when they change `src-tauri/`, `ui/` or the workflow itself (docs-only changes don't trigger it), and can be started by hand. It makes a debug build and runs the unit tests on macOS (Apple Silicon). On Windows (x64) it builds and compiles the unit tests without running them.
+
+## Releases
+
+1. Set the new version in `src-tauri/tauri.conf.json` (and in `src-tauri/Cargo.toml`), then push a tag `vX.Y.Z` that matches it, e.g. `v0.1.0`. The workflow stops if the tag and `tauri.conf.json` disagree.
+2. [`.github/workflows/release.yml`](../.github/workflows/release.yml) creates a draft release, builds the macOS app for Apple Silicon (`.dmg` and `.app.tar.gz`) and the Windows x64 NSIS installer (`-setup.exe`) into it, checks the uploaded macOS app (signature, hardened runtime, microphone entitlement) and publishes the release. The macOS bundle is signed ad hoc as a whole, with the hardened runtime and the microphone entitlement (`com.apple.security.device.audio-input`). It is not notarized, so Gatekeeper still asks once when the `.dmg` comes from a browser. The release is marked Latest right away, so the install command picks it up immediately. The workflow can also be run by hand (Actions → Release → Run workflow); it then releases the version in `tauri.conf.json`.
+3. [`install.sh`](../install.sh) always fetches the latest published release through the GitHub API and picks the macOS `.app.tar.gz` by its suffix, so the script does not change between versions. It stops every running copy of Voxy (a local build too), replaces the app and resets the Accessibility and Input Monitoring entries when the new app's code signature requirement differs from the installed one, or when another copy of Voxy may hold them: one with a different signature (for example a local build), or one outside the Applications folders, which the script does not open. With ad-hoc signing the signature differs on every release; a stable signing identity would keep the permissions across updates. `--reset-permissions` resets the two entries and restarts Voxy without downloading anything.
+
+`install.sh` reads a few environment variables, so you can test it without touching your real installation:
+
+| Variable | Effect |
+|---|---|
+| `VOXY_ARCHIVE` | Install from this local `.app.tar.gz` instead of downloading the latest release; a bad code signature is then only a warning |
+| `VOXY_APP_DIR` | Use this folder instead of `/Applications` |
+| `VOXY_NO_TCC` | Don't reset privacy permissions |
+| `VOXY_NO_LAUNCH` | Don't open Voxy |
+| `VOXY_NO_KILL` | Don't stop a running Voxy |
+| `VOXY_DATA_ROOT` | A folder that stands in for your home folder (Voxy's data, the login item, the Trash); the Keychain and `launchctl` are skipped |
+
+For example, to install a release archive you already downloaded into a throwaway folder:
+
+```sh
+VOXY_ARCHIVE=path/to/Voxy.app.tar.gz VOXY_APP_DIR="$(mktemp -d)" VOXY_DATA_ROOT="$(mktemp -d)" \
+  VOXY_NO_TCC=1 VOXY_NO_LAUNCH=1 VOXY_NO_KILL=1 bash install.sh
+```

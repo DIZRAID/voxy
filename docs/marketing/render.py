@@ -3,8 +3,13 @@
 
 Usage (from the repository root):
 
-    python3 docs/marketing/render.py            # every shot
-    python3 docs/marketing/render.py hero model # only these shots
+    python3 docs/marketing/render.py             # hero, island, social-preview
+    python3 docs/marketing/render.py hero island # only these shots
+
+By default it renders only the images the repository uses (DEFAULT_SHOTS):
+hero.png and island.png in the README, social-preview.png as GitHub's
+social card. The single-tab Settings scenes (model, general, recording,
+history) are still in compose.js and render when named explicitly.
 
 What it does:
   1. starts a static file server for the repository root on a free
@@ -74,6 +79,9 @@ SHOTS = {
     "island": (1600, 330, 2),
     "social-preview": (1280, 640, 1),
 }
+
+# rendered when no names are given: the images the repository actually uses
+DEFAULT_SHOTS = ["hero", "island", "social-preview"]
 
 # Virtual time the page gets before the capture: fetches + the settings
 # demo boot + the island's recording/transcribing sequence all finish well
@@ -210,7 +218,7 @@ ATTEMPTS = 3  # new headless occasionally sizes the window a few px off
 
 
 def main(argv: list[str]) -> None:
-    names = argv or list(SHOTS)
+    names = argv or DEFAULT_SHOTS
     unknown = [n for n in names if n not in SHOTS]
     if unknown:
         sys.exit(f"unknown shot(s): {', '.join(unknown)}; known: {', '.join(SHOTS)}")

@@ -23,7 +23,7 @@ Logs are written to `~/Library/Logs/Voxy.log` (on Windows, `%LOCALAPPDATA%\Voxy.
 |---|---|
 | Model is not ready yet | Shown when you press the hotkey: the active model is not downloaded or failed to load. Check Settings → Model |
 | Model is not ready | Shown after a recording: the local model failed to load, so the recording was not transcribed. Check Settings → Model and the [log](#logs) |
-| Online engine unavailable | The selected online provider has no saved API key, or macOS denied Voxy access to the key in the Keychain (this can happen after a rebuild). Add the key again in Settings → Model, or choose Always Allow when macOS asks |
+| Online engine unavailable | The selected online provider has no saved API key, or macOS denied Voxy access to the key in the Keychain (this can happen after an update or a rebuild). Add the key again in Settings → Model, or choose Always Allow when macOS asks |
 | Microphone unavailable | The input device could not be opened |
 | Didn't catch that | No speech was recognized |
 | Paste failed — text kept in clipboard | The synthetic ⌘V could not be sent, for example because Accessibility was turned off while Voxy was running. Paste with ⌘V yourself; the text is also in History |
@@ -34,7 +34,13 @@ Logs are written to `~/Library/Logs/Voxy.log` (on Windows, `%LOCALAPPDATA%\Voxy.
 ## The hotkey does nothing
 
 - Check the Settings window for the permissions banner: both Accessibility and Input Monitoring must be granted.
-- If you have rebuilt the app, the old permission entries no longer match it. Quit Voxy, reset them and open the new build (see [After a rebuild](../README.md#after-a-rebuild)):
+- If you have updated or rebuilt the app, the old permission entries may no longer match it (see [After an update](../README.md#after-an-update)). Reset them; this also restarts Voxy, and macOS asks for both permissions again:
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash -s -- --reset-permissions
+  ```
+
+  Or quit Voxy, reset them yourself and open the new version:
 
   ```sh
   tccutil reset Accessibility com.dizraid.voice
@@ -44,7 +50,7 @@ Logs are written to `~/Library/Logs/Voxy.log` (on Windows, `%LOCALAPPDATA%\Voxy.
 - After a reinstall, make sure the old copy is not still running.
 - If you started Voxy with `cargo tauri dev`, grant the permissions to your terminal app.
 - Make sure you are pressing the key shown in Settings → General → Hotkey.
-- Check the log. `accessibility=true input_monitoring=true`, followed by a line that contains `event tap установлен`, means the hotkey is active:
+- Check the log. `accessibility=true input_monitoring=true`, followed by a line that contains `event tap`, means the hotkey is active:
 
   ```sh
   grep -E 'accessibility=|event tap' ~/Library/Logs/Voxy.log | tail
@@ -108,12 +114,27 @@ The folder is named after the bundle identifier, which is older than the name Vo
 
 ## Uninstalling Voxy
 
+The installer can remove Voxy for you:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash -s -- --uninstall
+```
+
+Besides the app, this deletes the downloaded models, settings, history and saved API keys, and resets Voxy's privacy entries (Accessibility, Input Monitoring and Microphone). To keep the models, settings, history and API keys, add `--keep-data`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash -s -- --uninstall --keep-data
+```
+
+To do it by hand, or to check that nothing is left:
+
 1. Turn off Launch at login in Settings → General, then quit Voxy.
 2. Delete the app, the `com.dizraid.voice` folder and the log file listed [above](#data-locations).
-3. Delete the data macOS keeps for the app under the same identifier: `~/Library/WebKit/com.dizraid.voice`, `~/Library/Caches/com.dizraid.voice` and `~/Library/Preferences/com.dizraid.voice.plist`. If you deleted the app before turning off Launch at login, also delete `~/Library/LaunchAgents/Voxy.plist`.
-4. Remove its Keychain items (service `com.dizraid.voice`) and its privacy entries (Accessibility, Input Monitoring and Microphone):
+3. Delete the data macOS keeps for the app under the same identifier: `~/Library/WebKit/com.dizraid.voice`, `~/Library/Caches/com.dizraid.voice`, `~/Library/HTTPStorages/com.dizraid.voice`, `~/Library/Saved Application State/com.dizraid.voice.savedState` and `~/Library/Preferences/com.dizraid.voice.plist`. If you deleted the app before turning off Launch at login, also delete `~/Library/LaunchAgents/Voxy.plist`.
+4. Remove its Keychain items (service `com.dizraid.voice`, one item per online provider) and its privacy entries (Accessibility, Input Monitoring and Microphone). Repeat the `security` command until it reports that the item could not be found:
 
    ```sh
+   security delete-generic-password -s com.dizraid.voice
    tccutil reset Accessibility com.dizraid.voice
    tccutil reset ListenEvent com.dizraid.voice
    tccutil reset Microphone com.dizraid.voice

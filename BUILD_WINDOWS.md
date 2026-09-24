@@ -1,5 +1,3 @@
-[Русский](BUILD_WINDOWS.ru.md)
-
 # Building Voxy on Windows
 
 > **Status:** the Windows port is implemented in code but has **not yet been

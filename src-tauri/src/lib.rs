@@ -699,4 +699,21 @@ mod tests {
             "прозрачное окно требует macOSPrivateApi"
         );
     }
+
+    /// Релизы подписываются (release.yml, APPLE_SIGNING_IDENTITY) с hardened
+    /// runtime, а под ним микрофон без entitlement audio-input молча пишет
+    /// тишину. Локальные неподписанные сборки entitlements не используют.
+    #[test]
+    fn signed_builds_keep_microphone() {
+        let config: tauri::Config =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        assert_eq!(
+            config.bundle.macos.entitlements.as_deref(),
+            Some("Entitlements.plist")
+        );
+        let plist = include_str!("../Entitlements.plist");
+        let key = "<key>com.apple.security.device.audio-input</key>";
+        let after = &plist[plist.find(key).expect("audio-input") + key.len()..];
+        assert!(after.trim_start().starts_with("<true/>"));
+    }
 }

@@ -21,15 +21,56 @@
   <a href="#usage">Usage</a> ·
   <a href="#models">Models</a> ·
   <a href="docs/TROUBLESHOOTING.md">Troubleshooting</a> ·
-  <a href="docs/DEVELOPMENT.md">Development</a> ·
-  <a href="README.ru.md">Русский</a>
+  <a href="docs/DEVELOPMENT.md">Development</a>
 </p>
 
 <p align="center">
   <img src="docs/images/hero.png" width="100%" alt="Hold a key. Speak. It types. The Voxy island recording at the MacBook notch, above the Settings window's History tab with dictated text in five languages">
 </p>
 
-> **Early days.** Voxy is at version 0.1.0 and there are no prebuilt downloads yet, so for now you [build it from source](#build-from-source). It takes a few commands. The Windows port compiles in CI but has not been run on real hardware yet ([details](#windows)).
+> **Early days.** Voxy is at version 0.1.0. Prebuilt releases for Apple Silicon Macs are on the [Releases page](https://github.com/DIZRAID/voxy/releases/latest), and one command [installs](#install) the latest one. The Windows port is experimental: it compiles in CI but has not been run on real hardware yet ([details](#windows)).
+
+## Install
+
+Voxy needs macOS 14 or later and a Mac with Apple Silicon.
+
+### Quick install
+
+Paste this into Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash
+```
+
+It downloads the latest release, installs Voxy to `/Applications` and opens it. To update, run the same command again. After each update, macOS asks for Accessibility and Input Monitoring again ([why](#after-an-update)).
+
+### Or download
+
+Get the `.dmg` from the [Releases page](https://github.com/DIZRAID/voxy/releases/latest), open it and drag Voxy to Applications. The build is not signed by Apple, so Gatekeeper blocks it the first time you open it. On macOS 14, Control-click (right-click) the app, choose Open, then confirm. On macOS 15 and later, try to open the app once, then go to System Settings → Privacy & Security and click Open Anyway.
+
+To update this way, quit Voxy first (menu bar icon → Quit Voxy): only one copy can run, so a new version does not start while the old one is running. Then replace the app and see [After an update](#after-an-update).
+
+### Uninstall
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash -s -- --uninstall
+```
+
+Besides the app, this deletes the downloaded models, settings, history and saved API keys, and removes Voxy from the privacy lists (Microphone included). To keep the models, settings, history and API keys, add `--keep-data`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash -s -- --uninstall --keep-data
+```
+
+To remove everything by hand, see [Uninstalling Voxy](docs/TROUBLESHOOTING.md#uninstalling-voxy).
+
+### Requirements
+
+- macOS 14 Sonoma or later.
+- A Mac with Apple Silicon. Intel Macs are not supported by the prebuilt release yet.
+- Disk space and memory for at least one model: 44 MB to 1.04 GB on disk (see [Models](#models)). The default model takes 670 MB on disk and about 1.2 GB of RAM.
+
+Prefer to build it yourself? See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#build-from-source).
 
 ## Why Voxy
 
@@ -49,31 +90,6 @@ Speaking is often faster than typing. Voxy turns it into a single gesture: hold 
   <img src="docs/images/island.png" width="100%" alt="The Voxy island at the MacBook notch while recording (timer and waveform) and while transcribing">
 </p>
 <p align="center"><sub>The island at the notch: a timer, a live waveform and a glow while you speak, then "Transcribing…" until the text is pasted.</sub></p>
-
-In the app, the Settings window is made of the native macOS material, so it takes on the colors of whatever is behind it. The images here are rendered from the app's UI code ([docs/marketing](docs/marketing/)); on your Mac the window uses the system material, which can look more muted.
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/model.png" alt="Voxy Settings, Model tab">
-      <p align="center"><sub><b>Model</b>: installed and available models, online providers</sub></p>
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/history.png" alt="Voxy Settings, History tab">
-      <p align="center"><sub><b>History</b>: recent transcriptions by day, one click to copy</sub></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/recording.png" alt="Voxy Settings, Recording tab">
-      <p align="center"><sub><b>Recording</b>: Hold, Toggle or Dynamic, minimum press, maximum length</sub></p>
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/general.png" alt="Voxy Settings, General tab">
-      <p align="center"><sub><b>General</b>: hotkey, microphone, sounds, launch at login</sub></p>
-    </td>
-  </tr>
-</table>
 
 ## Models
 
@@ -112,49 +128,6 @@ Prices are the app's estimates as of September 2026. Billing is between you and 
 - **Clipboard:** pasting works through the clipboard, so the dictated text sits there briefly. If the clipboard held text before, that text is put back about 0.5 s later. Clipboard history tools may still record the dictated text.
 - **Other network requests:** model downloads (Hugging Face and GitHub) and the once-a-day check for new models (GitHub API). That's all.
 
-## Install
-
-### Requirements
-
-- macOS 14 Sonoma or later.
-- A Mac with Apple Silicon is recommended. Voxy is developed and tested on Apple Silicon; Intel Macs have not been tested.
-- Disk space and memory for at least one model: 44 MB to 1.04 GB on disk (see [Models](#models)). The default model takes 670 MB on disk and about 1.2 GB of RAM.
-- For building: a few GB of free disk space in `src-tauri/target`.
-
-### Build from source
-
-Prebuilt downloads are on the way (see [Roadmap](#roadmap)). Until then, you need three things:
-
-1. Xcode Command Line Tools: `xcode-select --install`
-2. Rust 1.88 or newer from [rustup.rs](https://rustup.rs). If Rust is already installed, run `rustup update stable`.
-3. Tauri CLI v2:
-   ```sh
-   cargo install tauri-cli --version "^2.0.0" --locked
-   ```
-
-Node.js and npm are not needed: the UI in `ui/` is plain HTML, CSS and JavaScript with no build step.
-
-Build Voxy and copy it to `/Applications`:
-
-```sh
-git clone https://github.com/DIZRAID/voxy.git
-cd voxy/src-tauri
-cargo tauri build
-cp -R target/release/bundle/macos/Voxy.app /Applications/
-open /Applications/Voxy.app
-```
-
-Good to know:
-
-- The first build downloads a prebuilt static sherpa-onnx library (with ONNX Runtime, about 20 MB) from the sherpa-onnx GitHub releases. If that download fails, see [Troubleshooting](docs/TROUBLESHOOTING.md#the-build-fails-while-downloading-sherpa-onnx).
-- Release builds use full LTO, so the final link step takes a while.
-- Debug builds from `cargo tauri dev` and `cargo test` take more disk space on top of the release build. `cargo clean` (run in `src-tauri/`) frees it.
-- **Gatekeeper.** A build you make on your own Mac opens normally. Builds are not notarized, though, so a copy downloaded from the internet is blocked the first time you open it. On macOS 14, Control-click (right-click) the app, choose Open, then confirm. On macOS 15 and later, try to open the app once, then go to System Settings → Privacy & Security and click Open Anyway.
-
-### Updating to a new build
-
-Quit the running Voxy first (menu bar icon → Quit Voxy). Only one copy of Voxy can run, so while the old one is running, the new build does not start. Delete the old `/Applications/Voxy.app`, copy the new one and open it. Then re-grant two permissions (see [After a rebuild](#after-a-rebuild)).
-
 ## First launch and permissions
 
 ### First launch
@@ -176,11 +149,17 @@ macOS: System Settings → Privacy & Security.
 
 The hotkey starts working once both Accessibility and Input Monitoring are granted. You do not need to restart Voxy, because it checks every 2 seconds. The button in the Settings banner opens the System Settings page for the next missing permission: Accessibility first, then Input Monitoring.
 
-### After a rebuild
+### After an update
 
-Builds are ad-hoc signed, so every new build has a different code signature. macOS keeps the old Accessibility and Input Monitoring entries, but they no longer match the new build: the switch still looks on, yet the permission does not work.
+Each release is signed ad hoc rather than with an Apple certificate, so every version has a different code signature. macOS keeps the old Accessibility and Input Monitoring entries, but they no longer match the new version: the switch still looks on, yet the permission does not work. So after each update, Voxy needs Accessibility and Input Monitoring again. The install command clears the old entries, and macOS asks when Voxy starts.
 
-The quickest fix is to reset both entries from Terminal (`com.dizraid.voice` is Voxy's bundle identifier, and `ListenEvent` is the system name for Input Monitoring):
+If you update manually, clear them yourself. The installer can do it without downloading anything; it also restarts Voxy:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash -s -- --reset-permissions
+```
+
+Use the same command if the hotkey does nothing after an update. Or reset the entries with `tccutil` (`com.dizraid.voice` is Voxy's bundle identifier, and `ListenEvent` is the system name for Input Monitoring):
 
 ```sh
 # Quit Voxy first (menu bar icon → Quit Voxy)
@@ -189,11 +168,9 @@ tccutil reset ListenEvent com.dizraid.voice
 open /Applications/Voxy.app
 ```
 
-Voxy asks for both permissions again when it starts; switch it on in both lists. If you prefer System Settings, quit Voxy, select it in each of the two lists and remove it with the − button, then open the new build and grant the permissions (or add the app back with +).
+Voxy asks for both permissions again when it starts; switch it on in both lists. If you prefer System Settings, quit Voxy, select it in each of the two lists and remove it with the − button, then open the new version and grant the permissions (or add the app back with +).
 
-For the same reason, macOS may ask whether Voxy can read a saved API key from the Keychain. Choose Always Allow.
-
-When you run Voxy with `cargo tauri dev`, macOS checks the permissions of the terminal app that started it (Terminal, iTerm and so on). Grant the permissions to that terminal app.
+For the same reason, macOS may ask whether Voxy can read a saved API key from the Keychain the first time after an update, sometimes with your login password. Choose Always Allow.
 
 ## Usage
 
@@ -223,18 +200,18 @@ The island also shows short messages when something goes wrong. [Troubleshooting
 
 A Windows 10/11 (x64) port is written: a low-level keyboard hook for the hotkey (Right Ctrl by default, no permissions needed), pasting with Ctrl+V that works with any keyboard layout, and an island that slides down from the top of the screen. CI builds it and compiles the unit tests on `windows-latest`, which shows that the code compiles and links, not that the app works. It has never been run on real hardware, so expect rough edges.
 
-Build steps, the differences from macOS and a testing checklist are in [BUILD_WINDOWS.md](BUILD_WINDOWS.md). Reports from Windows users are very welcome.
+Releases usually also include a Windows installer (`-setup.exe`) for testing (see the [latest release](https://github.com/DIZRAID/voxy/releases/latest)). Build steps, the differences from macOS and a testing checklist are in [BUILD_WINDOWS.md](BUILD_WINDOWS.md). Reports from Windows users are very welcome.
 
 ## Roadmap
 
-- **Signed and notarized macOS releases**, so you can download Voxy instead of building it.
+- **Notarized releases** (no Gatekeeper prompt) and **permissions that survive updates**.
 - **More local models**, added to the catalog after testing.
 - **Windows**: testing on real hardware and fixing what turns up.
 - **A light theme** for the Settings window.
 
 ## Documentation
 
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): running from source, tests, previewing the UI without Tauri, adding a model, project layout and stack.
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): building from source, running and testing, previewing the UI without Tauri, adding a model, releases, project layout and stack.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): logs, island messages, hotkey and paste problems, model downloads, build issues, data locations and uninstalling.
 - [BUILD_WINDOWS.md](BUILD_WINDOWS.md): building and testing on Windows.
 

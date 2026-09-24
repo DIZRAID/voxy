@@ -1,13 +1,31 @@
-# Build release bundles and attach them to a DRAFT GitHub release.
+# Build release bundles and publish them as a GitHub release.
 #
 # Trigger: push a tag named v<version>, where <version> is "version" in
 # src-tauri/tauri.conf.json (e.g. v0.1.0), or run the workflow by hand.
-# Either way the release is named after the tauri.conf.json version. Nothing is
-# published automatically: review the draft on GitHub and publish it yourself.
+# Either way the release is named after the tauri.conf.json version.
 #
-# Output:
-#   macOS (Apple Silicon): .dmg and .app (packed as .app.tar.gz)
-#   Windows (x64):         NSIS installer (-setup.exe)
+# Jobs:
+#   check-version   the tag matches tauri.conf.json, and that version is not
+#                   published yet
+#   create-release  deletes drafts that earlier runs left for this version and
+#                   creates one new draft. Both builds upload into it by its
+#                   id: if each build created its own draft, two builds that
+#                   finish at the same time could create two.
+#   build           macOS (Apple Silicon) and Windows (x64) bundles
+#   publish         checks the macOS app that install.sh will download, then
+#                   publishes the draft (not a pre-release, marked Latest)
+#
+# install.sh at the repository root downloads the .app.tar.gz from
+# https://api.github.com/repos/<owner>/<repo>/releases/latest, so a release
+# without a working macOS app must never become Latest. Once published, the
+# release is Latest right away and every install command picks it up. A
+# failed Windows build doesn't block publishing (the Windows port is
+# experimental).
+#
+# Output (file names as tauri-action v1 uploads them, for version 0.1.0):
+#   macOS (Apple Silicon): Voxy_0.1.0_aarch64.app.tar.gz  (used by install.sh)
+#                          Voxy_0.1.0_aarch64.dmg
+#   Windows (x64):         Voxy_0.1.0_x64-setup.exe       (NSIS installer)
 #
 # The project has no package.json, so tauri-action installs the Tauri CLI
 # itself (npm install -g @tauri-apps/cli@v2) and runs `tauri build` in
@@ -23,8 +41,10 @@ on:
 permissions:
   contents: read
 
+# One release run at a time: create-release deletes the drafts of its
+# version, which would break another run that is still uploading into one.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -33,10 +53,13 @@ jobs:
     name: Check version
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Compare tag with app version
+        id: version
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -52,16 +75,79 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match version $conf in src-tauri/tauri.conf.json (expected v$conf)"
             exit 1
           fi
-          # With releaseDraft: true, tauri-action only reuses a draft release. If
-          # this version is already published, it would fail after the build.
+          # Stop before the builds if this version is already out.
           if is_draft=$(gh release view "v$conf" --json isDraft --jq .isDraft 2>/dev/null) && [ "$is_draft" = "false" ]; then
             echo "::error::Release v$conf is already published. Bump the version in src-tauri/tauri.conf.json first."
             exit 1
           fi
+          echo "version=$conf" >>"$GITHUB_OUTPUT"
+
+  create-release:
+    name: Create draft release
+    needs: check-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      id: ${{ steps.draft.outputs.id }}
+    steps:
+      - name: Create the draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          # Drafts of this version from earlier runs (a failed build, a re-run
+          # of the whole workflow) would mix old assets into the release.
+          # ("Re-run failed jobs" keeps this job's result and uploads into the
+          # same draft.)
+          old=$(gh api --paginate "repos/$GH_REPO/releases" \
+            --jq ".[] | select(.draft and .tag_name == \"$tag\") | .id")
+          for id in $old; do
+            echo "Deleting the old draft $id of $tag"
+            gh api -X DELETE "repos/$GH_REPO/releases/$id"
+          done
+
+          notes="$RUNNER_TEMP/notes.md"
+          cat >"$notes" <<'EOF'
+          ## macOS 14 or later, Apple Silicon
+
+          Install or update with one command in Terminal:
+
+          ```sh
+          curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash
+          ```
+
+          It puts Voxy in /Applications and starts it. Run the same command to update.
+
+          Or download the `.dmg` below and drag Voxy to Applications. Voxy is not notarized by Apple, so macOS blocks it the first time you open it. On macOS 14, Control-click (right-click) Voxy, choose Open, then confirm. On macOS 15 and later, close the warning, then open System Settings → Privacy & Security, scroll down and click **Open Anyway**.
+
+          Voxy asks for Microphone, Accessibility and Input Monitoring. The app is not signed with an Apple Developer ID yet, so after each update it needs Accessibility and Input Monitoring again: the install command clears the old entries, and macOS asks when Voxy starts. After updating from the `.dmg`, clear them with this command, then allow both again:
+
+          ```sh
+          curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash -s -- --reset-permissions
+          ```
+
+          If you saved an API key for an online provider, macOS may ask for your login password the first time Voxy reads it after an update: click Always Allow.
+
+          ## Windows 10/11, x64 (experimental)
+
+          The `-setup.exe` installer, when the Windows build succeeded. The Windows port has not been tested yet. SmartScreen may warn about an unknown publisher: click More info → Run anyway.
+          EOF
+
+          id=$(jq -n --arg tag "$tag" --arg name "Voxy $tag" --arg sha "$GITHUB_SHA" --rawfile body "$notes" \
+            '{tag_name: $tag, name: $name, body: $body, target_commitish: $sha, draft: true, prerelease: false}' |
+            gh api -X POST "repos/$GH_REPO/releases" --input - --jq .id)
+          echo "Created the draft release $id for $tag"
+          echo "id=$id" >>"$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.name }}
-    needs: check-version
+    needs: create-release
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout }}
     permissions:
@@ -89,6 +175,21 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Ad-hoc code signature ("-": no certificate, no Apple account). Tauri then
+      # runs `codesign --force -s - --options runtime --entitlements
+      # Entitlements.plist` on the executable and on Voxy.app, so the bundle is
+      # sealed. Without it a .dmg downloaded in a browser opens as "damaged";
+      # with it Gatekeeper offers "Open Anyway". Notarization is skipped
+      # (no APPLE_ID / APPLE_API_KEY), and Tauri never signs the .dmg itself
+      # with "-". An ad-hoc signature is new on every build, so macOS forgets
+      # the Accessibility and Input Monitoring permissions on each update
+      # (install.sh resets them). Set only for macOS: an empty value would make
+      # codesign fail. The publish job checks the result.
+      - name: Use an ad-hoc signature (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+
       # No Rust cache here on purpose: releases are rare and are built from
       # scratch. The sherpa-onnx build script downloads its static libraries.
       - uses: tauri-apps/tauri-action@v1
@@ -102,9 +203,9 @@ jobs:
           # which tauri-build 2.6.3 doesn't read. macOS builds ignore it.
           STATIC_VCRUNTIME: "true"
 
-          # Code signing is not set up yet, so the bundles are unsigned.
-          # Apple signing and notarization (macOS job only; add these as
-          # repository secrets, then uncomment):
+          # Developer ID signing and notarization are not set up. To switch to
+          # them (macOS job only), add these as repository secrets, uncomment
+          # them and remove the ad-hoc step above:
           # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}                 # base64 of the Developer ID .p12
           # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}       # "Developer ID Application: Name (TEAMID)"
@@ -117,10 +218,10 @@ jobs:
           # APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}                         # key ID
           # APPLE_API_KEY_PATH: path to AuthKey_<key ID>.p8, written by an earlier step
           #
-          # Signing turns on the hardened runtime (bundle.macOS.hardenedRuntime
+          # Any signing turns on the hardened runtime (bundle.macOS.hardenedRuntime
           # defaults to true). Under it the microphone needs the
-          # com.apple.security.device.audio-input entitlement, set through
-          # bundle.macOS.entitlements in tauri.conf.json.
+          # com.apple.security.device.audio-input entitlement: it is in
+          # src-tauri/Entitlements.plist (bundle.macOS.entitlements).
           #
           # Windows signing is configured in tauri.conf.json
           # (bundle.windows.certificateThumbprint or bundle.windows.signCommand),
@@ -128,17 +229,93 @@ jobs:
         with:
           projectPath: src-tauri
           args: ${{ matrix.args }}
-          tagName: v__VERSION__
-          releaseName: Voxy v__VERSION__
-          releaseBody: |
-            Automated build. Not code-signed or notarized.
-
-            - macOS 14 or later, Apple Silicon: the `.dmg`
-            - Windows 10/11, x64: the `-setup.exe` installer (the Windows port has not been tested yet)
-          releaseDraft: true
-          prerelease: true
+          # Upload into the draft made by create-release (its name and notes
+          # are set there).
+          releaseId: ${{ needs.create-release.outputs.id }}
           # No updater is configured, so there is no latest.json to publish.
           uploadUpdaterJson: false
           # Re-runs `tauri build` once if it fails (e.g. a flaky hdiutil during
           # .dmg creation); compiled code is reused, so a retry is quick.
           retryAttempts: 1
+
+  publish:
+    name: Publish
+    needs: [create-release, build]
+    # Also after a failed Windows build: the macOS app is what counts, and the
+    # step below checks what was actually uploaded.
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    # macOS for codesign, to check the app the way install.sh gets it.
+    runs-on: macos-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check the macOS app and publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.create-release.outputs.id }}
+        run: |
+          set -euo pipefail
+          rel="repos/$GH_REPO/releases/$RELEASE_ID"
+          json="$RUNNER_TEMP/release.json"
+          gh api "$rel" >"$json"
+          tag=$(jq -r .tag_name "$json")
+          if [ "$(jq -r .draft "$json")" != "true" ]; then
+            echo "::error::Release $tag is not a draft any more."
+            exit 1
+          fi
+          # Only assets whose upload finished: an interrupted upload can leave
+          # an entry in another state.
+          assets=$(jq -r '.assets[] | select(.state == "uploaded" and .size > 0) | .name' "$json")
+          printf 'Assets of %s:\n%s\n' "$tag" "$assets"
+          # Matched by suffix, like install.sh does.
+          for suffix in _aarch64.app.tar.gz _aarch64.dmg; do
+            if ! grep -q -- "${suffix//./\\.}\$" <<<"$assets"; then
+              echo "::error::No complete *$suffix asset, so $tag stays a draft (install.sh needs the macOS build)."
+              exit 1
+            fi
+          done
+          if ! grep -q -- '-setup\.exe$' <<<"$assets"; then
+            echo "::warning::The Windows installer is missing; publishing $tag without it."
+          fi
+
+          # Check the archive install.sh downloads: Voxy.app at its root, a
+          # valid sealed signature, the hardened runtime and the microphone
+          # entitlement (without it Voxy would record silence). A Tauri CLI
+          # that signed differently would stop here, before anyone installs it.
+          asset=$(jq -r '[.assets[] | select(.state == "uploaded" and (.name | endswith("_aarch64.app.tar.gz")))][0].id' "$json")
+          archive="$RUNNER_TEMP/Voxy.app.tar.gz"
+          gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$asset" >"$archive"
+          tar -tzf "$archive" >"$RUNNER_TEMP/files.txt"
+          if ! grep -qE '^(\./)?Voxy\.app/Contents/Info\.plist$' "$RUNNER_TEMP/files.txt"; then
+            echo "::error::The .app.tar.gz does not have Voxy.app at its root."
+            exit 1
+          fi
+          mkdir "$RUNNER_TEMP/app"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/app"
+          app="$RUNNER_TEMP/app/Voxy.app"
+          id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
+          if [ "$id" != "com.dizraid.voice" ]; then
+            echo "::error::Voxy.app has bundle identifier $id, but install.sh expects com.dizraid.voice."
+            exit 1
+          fi
+          if ! codesign --verify --strict --deep "$app"; then
+            echo "::error::The code signature of Voxy.app does not verify."
+            exit 1
+          fi
+          info=$(codesign -dv "$app" 2>&1)
+          printf '%s\n' "$info"
+          if ! grep -q '^CodeDirectory .*flags=.*runtime' <<<"$info"; then
+            echo "::error::Voxy.app is not signed with the hardened runtime."
+            exit 1
+          fi
+          codesign -d --entitlements - --xml "$app" >"$RUNNER_TEMP/entitlements.plist"
+          mic=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$RUNNER_TEMP/entitlements.plist" 2>/dev/null || true)
+          if [ "$mic" != "true" ]; then
+            echo "::error::Voxy.app lacks the com.apple.security.device.audio-input entitlement, so it could not record."
+            exit 1
+          fi
+
+          url=$(gh api -X PATCH "$rel" -F draft=false -F prerelease=false -f make_latest=true --jq .html_url)
+          echo "Published $tag: $url"
