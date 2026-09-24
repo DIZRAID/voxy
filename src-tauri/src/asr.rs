@@ -143,6 +143,9 @@ impl Transcriber {
     }
 
     pub fn transcribe(&self, samples: &[f32], sample_rate: u32) -> String {
+        if too_short(samples.len(), sample_rate) {
+            return String::new();
+        }
         let stream = self.recognizer.create_stream();
         stream.accept_waveform(sample_rate as i32, samples);
         self.recognizer.decode(&stream);
@@ -173,6 +176,9 @@ pub fn split_long(
     mut f: impl FnMut(&[f32]) -> String,
 ) -> Vec<String> {
     let rate = sample_rate as f32;
+    if too_short(samples.len(), sample_rate) {
+        return vec![];
+    }
     if samples.len() as f32 <= max_s * rate {
         let text = f(samples);
         return if text.is_empty() { vec![] } else { vec![text] };
@@ -204,6 +210,15 @@ pub fn split_long(
 /// (~0.8 МБ WAV), а распознавание — точным.
 pub const ONLINE_MAX_CHUNK_S: f32 = 28.0;
 
+/// Более короткий звук в модель не отдаём: слов в нём нет, а на пустом
+/// входе ONNX Runtime бросает C++-исключение (Parakeet: «Invalid input
+/// shape {0,128}»), которое Rust не может перехватить, — процесс падает.
+pub const MIN_INPUT_S: f32 = 0.1;
+
+fn too_short(len: usize, sample_rate: u32) -> bool {
+    (len as f32) < MIN_INPUT_S * sample_rate as f32
+}
+
 /// Ищет центр самого тихого ~окна в пределах ±radius от `around`,
 /// чтобы резать речь по паузе, а не посреди слова.
 pub fn quietest_point(samples: &[f32], around: usize, radius: usize) -> usize {
@@ -232,6 +247,22 @@ pub fn quietest_point(samples: &[f32], around: usize, radius: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::split_long;
+
+    /// Пустой и слишком короткий звук не доходит до движка.
+    #[test]
+    fn split_long_skips_too_short_input() {
+        let rate = 16_000u32;
+        for n in [0usize, 1, 80, 1599] {
+            let mut called = false;
+            let parts = split_long(&vec![0.1; n], rate, 28.0, |_| {
+                called = true;
+                "x".into()
+            });
+            assert!(!called && parts.is_empty(), "{n} сэмплов дошли до движка");
+        }
+        let parts = split_long(&vec![0.1; 1600], rate, 28.0, |_| "x".into());
+        assert_eq!(parts, vec!["x".to_string()]);
+    }
 
     /// Куски не длиннее предела, покрывают запись целиком и без пересечений.
     #[test]

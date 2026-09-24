@@ -300,7 +300,8 @@ impl Worker {
         self.parts.clear();
         let error = self.session_error.take();
         log::info!(
-            "финал: хвост за {:?}, всего {} символов (запись {} мс, движок {})",
+            "финал: хвост {} сэмплов за {:?}, всего {} символов (запись {} мс, движок {})",
+            samples.len(),
             t0.elapsed(),
             text.chars().count(),
             duration_ms,
