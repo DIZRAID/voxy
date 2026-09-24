@@ -33,6 +33,21 @@ pub struct Settings {
     pub autostart: bool,
     /// Срок хранения истории: "24h" | "7d" | "30d" | "forever".
     pub history_keep: String,
+    /// Активный движок: id локальной модели из каталога или
+    /// "online:<provider>" (openai | groq | elevenlabs).
+    pub active_model: String,
+    /// Через сколько минут простоя выгружать локальную модель из памяти
+    /// (0 — никогда). На 8-гигабайтном Mac это ~1 ГБ, возвращаемый системе.
+    pub unload_after_min: u32,
+}
+
+pub const ONLINE_PREFIX: &str = "online:";
+
+impl Settings {
+    /// Провайдер, если активен онлайн-движок.
+    pub fn online_provider(&self) -> Option<&str> {
+        self.active_model.strip_prefix(ONLINE_PREFIX)
+    }
 }
 
 impl Default for Settings {
@@ -46,6 +61,8 @@ impl Default for Settings {
             mic_device: None,
             autostart: false,
             history_keep: "7d".to_string(),
+            active_model: crate::models::DEFAULT_MODEL.to_string(),
+            unload_after_min: 5,
         }
     }
 }

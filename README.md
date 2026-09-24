@@ -28,11 +28,34 @@ cargo tauri dev
 Модель (~670 МБ) скачивается автоматически при первом запуске в
 `~/Library/Application Support/com.dizraid.voice/models/`.
 
-Смоук-тест распознавания без UI:
+Сквозной тест любой модели каталога без UI (скачивание тем же кодом,
+что в приложении — докачка, SHA-256, распаковка — плюс распознавание WAV):
 
 ```bash
-cargo run --release --example asr_smoke -- путь/к/файлу.wav
+cargo run --release --example model_smoke -- <model-id> путь/к/файлу.wav <папка-моделей>
 ```
+
+Юнит-тесты: `cargo test --lib`; сетевой тест провайдеров с ложным ключом:
+`cargo test --lib -- --ignored fake_keys`.
+
+## Модели
+
+Каталог встроен в приложение (`src-tauri/src/catalog.json`): закреплённые
+ревизии файлов с SHA-256, метки, языки, оценка памяти и скорости.
+
+| Модель | Метка | На диске | Языки |
+|---|---|---|---|
+| Parakeet TDT 0.6B v3 | Best balance (по умолчанию) | 670 МБ | 25 европейских |
+| Whisper large-v3 turbo | Most languages · Slower | 1.04 ГБ | 99 |
+| Qwen3-ASR 0.6B | Asian languages | 987 МБ | 30 |
+| Parakeet TDT 110M | Fastest | 136 МБ | английский |
+| Moonshine v2 Tiny | Smallest | 44 МБ | английский |
+
+Онлайн-провайдеры с ключом пользователя (ключи — в Связке ключей):
+OpenAI `gpt-transcribe`, Groq `whisper-large-v3-turbo`, ElevenLabs `scribe_v2`.
+Новые модели раз в сутки ищутся в релизе sherpa-onnx (`discovery.rs`) и
+показываются как «Not rated yet»; в каталог они попадают с обновлением
+приложения после проверки.
 
 ## Разрешения macOS (обязательно)
 

@@ -130,22 +130,40 @@
 
     <!-- MODEL -->
     <section id="tab-model" class="tab-page hidden">
-      <div class="model-card">
-        <div class="nvidia-badge">NVIDIA</div>
-        <div class="model-title-block">
-          <div class="row-title">Parakeet TDT 0.6B v3</div>
-          <div class="row-sub">600M parameters · on-device</div>
+      <div class="models-scroll">
+        <div class="models-head">
+          <span class="models-title">On this Mac</span>
+          <span class="models-hint">Private · works offline</span>
         </div>
-        <div class="status-pill" id="model-pill">
-          <span class="dot pulse" id="model-pill-dot"></span>
-          <span id="model-pill-label">Enabled</span>
+        <div id="local-models"></div>
+
+        <div class="models-head">
+          <span class="models-title">Online</span>
+          <span class="models-hint">Your own API key · audio is sent to the provider</span>
         </div>
-      </div>
-      <div class="model-placeholder">
-        <div class="plus-circle">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        <div id="online-providers"></div>
+
+        <div id="discovered-block" class="hidden">
+          <div class="models-head">
+            <span class="models-title">New releases</span>
+            <button type="button" class="link-btn" id="discovered-link">View all</button>
+          </div>
+          <div class="models-hint discovered-note">Found automatically. Typely rates and adds new models in app updates.</div>
+          <div id="discovered"></div>
         </div>
-        <div class="ph-label">More models coming later</div>
+
+        <div class="model-row unload-row">
+          <div>
+            <div class="row-title">Free memory when idle</div>
+            <div class="row-sub">Unload the local model after a pause; it reloads while you speak</div>
+          </div>
+          <div class="dd-anchor" id="unload-anchor">
+            <button class="btn dd-trigger" id="unload-trigger">
+              <span id="unload-label">After 5 min</span>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
+            </button>
+          </div>
+        </div>
       </div>
     </section>
 

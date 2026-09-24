@@ -1,0 +1,250 @@
+{
+  "version": 1,
+  "generated_at": "2026-09-24T00:00:00Z",
+  "models": [
+    {
+      "id": "parakeet-tdt-0.6b-v3",
+      "dir": "parakeet-tdt-0.6b-v3-int8",
+      "name": "Parakeet TDT 0.6B v3",
+      "vendor": "NVIDIA",
+      "family": "nemo_transducer",
+      "labels": [
+        "best_balance"
+      ],
+      "languages": 25,
+      "languages_note": "25 European languages, auto-detected",
+      "english_only": false,
+      "ram_mb": 1200,
+      "license": "CC-BY-4.0",
+      "homepage": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+      "source": {
+        "kind": "files",
+        "base_url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/2bda32ec70b097a55adaa07d9a7173915b43cc78"
+      },
+      "files": [
+        {
+          "role": "encoder",
+          "path": "encoder.int8.onnx",
+          "size": 652184281,
+          "sha256": "acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247"
+        },
+        {
+          "role": "decoder",
+          "path": "decoder.int8.onnx",
+          "size": 11845275,
+          "sha256": "179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e"
+        },
+        {
+          "role": "joiner",
+          "path": "joiner.int8.onnx",
+          "size": 6355277,
+          "sha256": "3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3"
+        },
+        {
+          "role": "tokens",
+          "path": "tokens.txt",
+          "size": 93939,
+          "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+        }
+      ],
+      "size_mb": 670,
+      "upstream": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+      "speed": "fast"
+    },
+    {
+      "id": "whisper-large-v3-turbo",
+      "dir": "whisper-large-v3-turbo-int8",
+      "name": "Whisper large-v3 turbo",
+      "vendor": "OpenAI",
+      "family": "whisper",
+      "labels": [
+        "most_languages"
+      ],
+      "languages": 99,
+      "languages_note": "99 languages, auto-detected",
+      "english_only": false,
+      "ram_mb": 1900,
+      "license": "MIT",
+      "homepage": "https://huggingface.co/openai/whisper-large-v3-turbo",
+      "source": {
+        "kind": "files",
+        "base_url": "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-turbo/resolve/2ca6ff69fc878651b770880507669577ac41c2ff"
+      },
+      "files": [
+        {
+          "role": "encoder",
+          "path": "turbo-encoder.int8.onnx",
+          "size": 674716297,
+          "sha256": "b02dcdf54f348741e93fe732b67d933c8dcb6735655f710640143081db38878b"
+        },
+        {
+          "role": "decoder",
+          "path": "turbo-decoder.int8.onnx",
+          "size": 361080764,
+          "sha256": "20accd02388482eb3a46bd615631adfdc85e1eb2c7db9ea3f02a40ffe6b81547"
+        },
+        {
+          "role": "tokens",
+          "path": "turbo-tokens.txt",
+          "size": 816730,
+          "sha256": "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126"
+        }
+      ],
+      "size_mb": 1037,
+      "upstream": "sherpa-onnx-whisper-turbo",
+      "speed": "slow"
+    },
+    {
+      "id": "qwen3-asr-0.6b",
+      "dir": "qwen3-asr-0.6b-int8",
+      "name": "Qwen3-ASR 0.6B",
+      "vendor": "Alibaba Qwen",
+      "family": "qwen3_asr",
+      "labels": [
+        "asian_languages"
+      ],
+      "languages": 30,
+      "languages_note": "30 languages incl. Chinese, Japanese, Korean, Arabic, Hindi",
+      "english_only": false,
+      "ram_mb": 1800,
+      "license": "Apache-2.0",
+      "homepage": "https://huggingface.co/Qwen/Qwen3-ASR-0.6B",
+      "source": {
+        "kind": "files",
+        "base_url": "https://huggingface.co/csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/68818b2313fe77bd06f6a7c5068ff3ef59d02b8a"
+      },
+      "files": [
+        {
+          "role": "conv_frontend",
+          "path": "conv_frontend.onnx",
+          "size": 44148281,
+          "sha256": "d22dc4423e0940e49884e903d2ea2f7e5567c14fc1aed97e4e26d6b8f208ef9e"
+        },
+        {
+          "role": "encoder",
+          "path": "encoder.int8.onnx",
+          "size": 182491662,
+          "sha256": "60748d3e6744a57c9c91e1b17424a6c2990567e8adceb0783940c03ed98fa9d9"
+        },
+        {
+          "role": "decoder",
+          "path": "decoder.int8.onnx",
+          "size": 755914231,
+          "sha256": "4f6885be5959ae26af3089d38ee7972c5fafbeeb1cf8d5e76eab6d8b61ca5771"
+        },
+        {
+          "role": "tokenizer",
+          "path": "tokenizer/merges.txt",
+          "size": 1671853,
+          "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+        },
+        {
+          "role": "tokenizer",
+          "path": "tokenizer/tokenizer_config.json",
+          "size": 12487,
+          "sha256": "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c"
+        },
+        {
+          "role": "tokenizer",
+          "path": "tokenizer/vocab.json",
+          "size": 2776833,
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+        }
+      ],
+      "size_mb": 987,
+      "upstream": "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
+      "speed": "medium"
+    },
+    {
+      "id": "parakeet-tdt-110m-en",
+      "dir": "parakeet-tdt-110m-en-int8",
+      "name": "Parakeet TDT 110M",
+      "vendor": "NVIDIA",
+      "family": "nemo_transducer",
+      "labels": [
+        "fastest"
+      ],
+      "languages": 1,
+      "languages_note": "English only",
+      "english_only": true,
+      "ram_mb": 300,
+      "license": "CC-BY-4.0",
+      "homepage": "https://huggingface.co/nvidia/parakeet-tdt_ctc-110m",
+      "source": {
+        "kind": "archive",
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2",
+        "size": 108035095,
+        "sha256": "f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b"
+      },
+      "files": [
+        {
+          "role": "encoder",
+          "path": "encoder.int8.onnx",
+          "size": 131113202
+        },
+        {
+          "role": "decoder",
+          "path": "decoder.int8.onnx",
+          "size": 3955863
+        },
+        {
+          "role": "joiner",
+          "path": "joiner.int8.onnx",
+          "size": 1411403
+        },
+        {
+          "role": "tokens",
+          "path": "tokens.txt",
+          "size": 9953
+        }
+      ],
+      "size_mb": 136,
+      "upstream": "sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8",
+      "speed": "fast"
+    },
+    {
+      "id": "moonshine-v2-tiny-en",
+      "dir": "moonshine-v2-tiny-en",
+      "name": "Moonshine v2 Tiny",
+      "vendor": "Useful Sensors",
+      "family": "moonshine",
+      "labels": [
+        "smallest"
+      ],
+      "languages": 1,
+      "languages_note": "English only",
+      "english_only": true,
+      "ram_mb": 100,
+      "license": "MIT",
+      "homepage": "https://huggingface.co/UsefulSensors/moonshine",
+      "source": {
+        "kind": "files",
+        "base_url": "https://huggingface.co/csukuangfj2/sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27/resolve/d1e6c30921780b8508d04b492dfb3ce8a51605d4"
+      },
+      "files": [
+        {
+          "role": "encoder",
+          "path": "encoder_model.ort",
+          "size": 13281600,
+          "sha256": "94e90a4654fc45cdfedb77c4c08e1739f48862998e58fada384b25118134f221"
+        },
+        {
+          "role": "merged_decoder",
+          "path": "decoder_model_merged.ort",
+          "size": 30412256,
+          "sha256": "cf524c4862d36e9e5ab032eddc73637efd822d70e868ac575cf1a46e1e4708a0"
+        },
+        {
+          "role": "tokens",
+          "path": "tokens.txt",
+          "size": 549350,
+          "sha256": "2870d843e14c1e187bf1913a521562a63b53933814bd7f2145120468f494a049"
+        }
+      ],
+      "size_mb": 44,
+      "max_chunk_s": 8.0,
+      "upstream": "sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27",
+      "speed": "fast"
+    }
+  ]
+}

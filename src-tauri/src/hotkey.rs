@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
-use crate::asr::{ModelStatus, STATUS_READY};
+use crate::asr::{self, ModelStatus};
 use crate::store::{RecordMode, SharedSettings};
 use crate::{audio, island, platform, store, WorkerMsg};
 
@@ -198,6 +198,7 @@ pub fn spawn(
                                 &model_status,
                                 &mut recorder,
                                 ctrl_tx.clone(),
+                                &worker_tx,
                             );
                             if recording_since.is_some() {
                                 session += 1;
@@ -237,6 +238,7 @@ pub fn spawn(
                                 &model_status,
                                 &mut recorder,
                                 ctrl_tx.clone(),
+                                &worker_tx,
                             );
                             if recording_since.is_some() {
                                 session += 1;
@@ -338,13 +340,16 @@ fn try_start(
     model_status: &ModelStatus,
     recorder: &mut audio::Recorder,
     ctrl_tx: Sender<Ctrl>,
+    worker_tx: &Sender<WorkerMsg>,
 ) -> Option<Instant> {
     let (sounds, device, max_s) = {
         let s = store::read(settings);
         (s.sounds, s.mic_device.clone(), s.max_record_s)
     };
 
-    if model_status.load(Ordering::Relaxed) != STATUS_READY {
+    // Выгруженная после простоя или ещё загружающаяся модель запись не
+    // блокирует: worker загрузит её, пока человек говорит.
+    if !asr::can_record(model_status.load(Ordering::Relaxed)) {
         island::set_state(app, "error", Some("Model is not ready yet".into()));
         if sounds {
             platform::play(platform::Sound::Error);
@@ -354,6 +359,7 @@ fn try_start(
 
     match recorder.start(app, device.as_deref(), max_s, ctrl_tx) {
         Ok(()) => {
+            let _ = worker_tx.send(WorkerMsg::EnsureLoaded);
             if sounds {
                 platform::play(platform::Sound::Start);
             }

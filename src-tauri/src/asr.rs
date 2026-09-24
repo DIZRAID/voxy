@@ -1,33 +1,30 @@
-//! Распознавание речи: Parakeet TDT 0.6B v3 (int8 ONNX) через sherpa-onnx.
-//! Модель скачивается в app_data_dir/models и загружается в память один раз.
+//! Локальное распознавание речи через sherpa-onnx. Поддерживаемые
+//! семейства моделей (см. catalog.json): NeMo-трансдьюсеры (Parakeet),
+//! Whisper, Qwen3-ASR, Moonshine v2.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use serde_json::json;
-use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
-use std::io::{Read, Write};
-use std::path::PathBuf;
+use sherpa_onnx::{
+    OfflineQwen3ASRModelConfig, OfflineRecognizer, OfflineRecognizerConfig,
+    OfflineTransducerModelConfig, OfflineWhisperModelConfig,
+};
+use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
-pub const MODEL_DIR_NAME: &str = "parakeet-tdt-0.6b-v3-int8";
-const HF_BASE: &str =
-    "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main";
+use crate::models::ModelSpec;
 
-/// (имя файла, примерный размер в байтах — для прогресса)
-const MODEL_FILES: [(&str, u64); 4] = [
-    ("tokens.txt", 94_000),
-    ("decoder.int8.onnx", 12_400_000),
-    ("joiner.int8.onnx", 6_400_000),
-    ("encoder.int8.onnx", 652_000_000),
-];
-
-/// Статус модели, разделяемый между потоками (лёгкое чтение из контроллера хоткея).
+/// Статус активного движка, разделяемый между потоками (лёгкое чтение
+/// из контроллера хоткея).
 pub const STATUS_MISSING: u8 = 0;
 pub const STATUS_DOWNLOADING: u8 = 1;
 pub const STATUS_LOADING: u8 = 2;
 pub const STATUS_READY: u8 = 3;
 pub const STATUS_ERROR: u8 = 4;
+/// Модель на диске, но выгружена из памяти после простоя: запись
+/// разрешена, загрузка идёт параллельно с ней.
+pub const STATUS_UNLOADED: u8 = 5;
 
 pub type ModelStatus = Arc<AtomicU8>;
 
@@ -37,8 +34,15 @@ pub fn status_name(status: u8) -> &'static str {
         STATUS_LOADING => "loading",
         STATUS_READY => "ready",
         STATUS_ERROR => "error",
+        STATUS_UNLOADED => "unloaded",
         _ => "missing",
     }
+}
+
+/// Можно ли начинать запись: модель готова или будет готова к моменту,
+/// когда запись закончится.
+pub fn can_record(status: u8) -> bool {
+    matches!(status, STATUS_READY | STATUS_UNLOADED | STATUS_LOADING)
 }
 
 pub fn emit_status(app: &AppHandle, status: &ModelStatus, code: u8, extra: serde_json::Value) {
@@ -52,158 +56,83 @@ pub fn emit_status(app: &AppHandle, status: &ModelStatus, code: u8, extra: serde
     let _ = app.emit_to("settings", "model-status", payload);
 }
 
-pub struct ModelPaths {
-    pub dir: PathBuf,
-}
-
-impl ModelPaths {
-    pub fn encoder(&self) -> PathBuf {
-        self.dir.join("encoder.int8.onnx")
-    }
-    pub fn decoder(&self) -> PathBuf {
-        self.dir.join("decoder.int8.onnx")
-    }
-    pub fn joiner(&self) -> PathBuf {
-        self.dir.join("joiner.int8.onnx")
-    }
-    pub fn tokens(&self) -> PathBuf {
-        self.dir.join("tokens.txt")
-    }
-    pub fn exists(&self) -> bool {
-        MODEL_FILES
-            .iter()
-            .all(|(name, _)| self.dir.join(name).is_file())
-    }
-}
-
-pub fn model_paths(app: &AppHandle) -> ModelPaths {
-    let dir = crate::store::data_dir(app)
-        .join("models")
-        .join(MODEL_DIR_NAME);
-    ModelPaths { dir }
-}
-
-/// Скачивает недостающие файлы модели в отдельном потоке.
-/// По завершении просит worker загрузить модель (WorkerMsg::LoadModel).
-pub fn spawn_download(
-    app: AppHandle,
-    status: ModelStatus,
-    worker_tx: std::sync::mpsc::Sender<crate::WorkerMsg>,
-) {
-    if status.load(Ordering::Relaxed) == STATUS_DOWNLOADING {
-        return;
-    }
-    emit_status(&app, &status, STATUS_DOWNLOADING, json!({ "progress": 0 }));
-
-    std::thread::spawn(move || {
-        let paths = model_paths(&app);
-        if let Err(e) = std::fs::create_dir_all(&paths.dir) {
-            emit_status(
-                &app,
-                &status,
-                STATUS_ERROR,
-                json!({ "message": format!("не удалось создать папку модели: {e}") }),
-            );
-            return;
-        }
-
-        let total: u64 = MODEL_FILES.iter().map(|(_, size)| size).sum();
-        let mut done: u64 = 0;
-
-        for (name, approx_size) in MODEL_FILES {
-            let target = paths.dir.join(name);
-            if target.is_file() {
-                done += approx_size;
-                continue;
-            }
-            match download_file(&app, &status, name, &target, done, total) {
-                Ok(()) => done += approx_size,
-                Err(e) => {
-                    let _ = std::fs::remove_file(&target);
-                    emit_status(
-                        &app,
-                        &status,
-                        STATUS_ERROR,
-                        json!({ "message": format!("ошибка скачивания {name}: {e}") }),
-                    );
-                    return;
-                }
-            }
-        }
-
-        let _ = worker_tx.send(crate::WorkerMsg::LoadModel);
-    });
-}
-
-fn download_file(
-    app: &AppHandle,
-    status: &ModelStatus,
-    name: &str,
-    target: &PathBuf,
-    done_before: u64,
-    total: u64,
-) -> Result<()> {
-    let url = format!("{HF_BASE}/{name}");
-    let resp = ureq::get(&url)
-        .timeout(std::time::Duration::from_secs(3600))
-        .call()
-        .with_context(|| format!("запрос {url}"))?;
-
-    let tmp = target.with_extension("part");
-    let mut reader = resp.into_reader();
-    let mut file = std::fs::File::create(&tmp)?;
-    let mut buf = vec![0u8; 1 << 20];
-    let mut written: u64 = 0;
-    let mut last_pct: i64 = -1;
-
-    loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buf[..n])?;
-        written += n as u64;
-        let pct = ((done_before + written) * 100 / total) as i64;
-        if pct != last_pct {
-            last_pct = pct;
-            emit_status(
-                app,
-                status,
-                STATUS_DOWNLOADING,
-                json!({ "progress": pct, "file": name }),
-            );
-        }
-    }
-    file.flush()?;
-    drop(file);
-    std::fs::rename(&tmp, target)?;
-    Ok(())
-}
-
 /// Обёртка над OfflineRecognizer. Живёт в потоке worker'а и не покидает его.
 pub struct Transcriber {
     recognizer: OfflineRecognizer,
+    pub model_id: String,
+    max_chunk_s: f32,
 }
 
 impl Transcriber {
-    pub fn load(paths: &ModelPaths) -> Result<Self> {
+    pub fn load(spec: &ModelSpec, dir: &Path) -> Result<Self> {
         let mut config = OfflineRecognizerConfig::default();
-        config.model_config.transducer = OfflineTransducerModelConfig {
-            encoder: Some(paths.encoder().to_string_lossy().into_owned()),
-            decoder: Some(paths.decoder().to_string_lossy().into_owned()),
-            joiner: Some(paths.joiner().to_string_lossy().into_owned()),
-        };
-        config.model_config.tokens = Some(paths.tokens().to_string_lossy().into_owned());
-        config.model_config.model_type = Some("nemo_transducer".into());
+        let mc = &mut config.model_config;
+        match spec.family.as_str() {
+            "nemo_transducer" => {
+                mc.transducer = OfflineTransducerModelConfig {
+                    encoder: Some(spec.file(dir, "encoder")?),
+                    decoder: Some(spec.file(dir, "decoder")?),
+                    joiner: Some(spec.file(dir, "joiner")?),
+                };
+                mc.tokens = Some(spec.file(dir, "tokens")?);
+                mc.model_type = Some("nemo_transducer".into());
+            }
+            "whisper" => {
+                mc.whisper = OfflineWhisperModelConfig {
+                    encoder: Some(spec.file(dir, "encoder")?),
+                    decoder: Some(spec.file(dir, "decoder")?),
+                    // пустой язык = автоопределение
+                    language: Some(String::new()),
+                    task: Some("transcribe".into()),
+                    ..Default::default()
+                };
+                mc.tokens = Some(spec.file(dir, "tokens")?);
+            }
+            "qwen3_asr" => {
+                // tokenizer — папка, в которой лежат vocab.json и merges.txt
+                let tokenizer = Path::new(&spec.file(dir, "tokenizer")?)
+                    .parent()
+                    .ok_or_else(|| anyhow!("нет папки tokenizer"))?
+                    .to_string_lossy()
+                    .into_owned();
+                mc.qwen3_asr = OfflineQwen3ASRModelConfig {
+                    conv_frontend: Some(spec.file(dir, "conv_frontend")?),
+                    encoder: Some(spec.file(dir, "encoder")?),
+                    decoder: Some(spec.file(dir, "decoder")?),
+                    tokenizer: Some(tokenizer),
+                    // По умолчанию 128 новых токенов: быстрой речи в куске
+                    // ~26 c может не хватить. Контекст = ~330 аудио-токенов
+                    // + промпт + ответ, отсюда запас 1024.
+                    max_new_tokens: 256,
+                    max_total_len: 1024,
+                    ..Default::default()
+                };
+                mc.tokens = Some(String::new());
+            }
+            "moonshine" => {
+                mc.moonshine.encoder = Some(spec.file(dir, "encoder")?);
+                mc.moonshine.merged_decoder = Some(spec.file(dir, "merged_decoder")?);
+                mc.tokens = Some(spec.file(dir, "tokens")?);
+            }
+            other => bail!("неизвестное семейство модели: {other}"),
+        }
         let threads = crate::platform::inference_threads();
-        config.model_config.num_threads = threads;
+        mc.num_threads = threads;
         config.decoding_method = Some("greedy_search".into());
 
         let t0 = std::time::Instant::now();
         let recognizer = OfflineRecognizer::create(&config)
-            .ok_or_else(|| anyhow!("sherpa-onnx не смог создать распознаватель"))?;
-        log::info!("модель загружена за {:?}, потоков: {threads}", t0.elapsed());
-        Ok(Self { recognizer })
+            .ok_or_else(|| anyhow!("sherpa-onnx не смог загрузить модель {}", spec.id))?;
+        log::info!(
+            "модель {} загружена за {:?}, потоков: {threads}",
+            spec.id,
+            t0.elapsed()
+        );
+        Ok(Self {
+            recognizer,
+            model_id: spec.id.clone(),
+            max_chunk_s: spec.max_chunk_s,
+        })
     }
 
     /// Прогрев: первая инференция инициализирует сессии ONNX Runtime,
@@ -223,33 +152,57 @@ impl Transcriber {
             .unwrap_or_default()
     }
 
-    /// Модель обучена на фразах до ~30 c, поэтому длинные записи режем на
-    /// куски ≤25 c, выбирая границу в самой тихой точке (чтобы не резать
-    /// слово посередине), и склеиваем распознанные части.
+    /// Длинные записи режем на куски не длиннее предела модели (Whisper —
+    /// строго ≤30 c, Moonshine v2 — ~9 c), выбирая границу в самой тихой
+    /// точке, чтобы не резать слово посередине, и склеиваем части.
     pub fn transcribe_long(&self, samples: &[f32], sample_rate: u32) -> String {
-        let rate = sample_rate as usize;
-        let chunk = rate * 25;
-        // небольшой хвост сверх лимита не режем — модель справится
-        if samples.len() <= chunk + rate * 5 {
-            return self.transcribe(samples, sample_rate);
-        }
-
-        let mut parts: Vec<String> = Vec::new();
-        let mut start = 0usize;
-        while start < samples.len() {
-            let mut end = (start + chunk).min(samples.len());
-            if end < samples.len() {
-                end = quietest_point(samples, end, rate * 5 / 2);
-            }
-            let text = self.transcribe(&samples[start..end], sample_rate);
-            if !text.is_empty() {
-                parts.push(text);
-            }
-            start = end;
-        }
-        parts.join(" ")
+        split_long(samples, sample_rate, self.max_chunk_s, |piece| {
+            self.transcribe(piece, sample_rate)
+        })
+        .join(" ")
     }
 }
+
+/// Режет запись на куски короче `max_s` по тихим точкам и прогоняет
+/// каждый через `f`. Пустые результаты отбрасываются. Общая логика для
+/// локальных и онлайн-движков (онлайн: `ONLINE_MAX_CHUNK_S`).
+pub fn split_long(
+    samples: &[f32],
+    sample_rate: u32,
+    max_s: f32,
+    mut f: impl FnMut(&[f32]) -> String,
+) -> Vec<String> {
+    let rate = sample_rate as f32;
+    if samples.len() as f32 <= max_s * rate {
+        let text = f(samples);
+        return if text.is_empty() { vec![] } else { vec![text] };
+    }
+
+    // Цель — 6/7 предела, поиск паузы ±1/14: кусок всегда < 13/14 предела
+    // (для 28 c: цель 24 c ± 2 c).
+    let target = (max_s * rate * 6.0 / 7.0) as usize;
+    let radius = (max_s * rate / 14.0) as usize;
+    let mut parts: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    while start < samples.len() {
+        let rest = &samples[start..];
+        let len = if rest.len() as f32 <= max_s * rate {
+            rest.len()
+        } else {
+            quietest_point(rest, target, radius).max(1)
+        };
+        let text = f(&rest[..len]);
+        if !text.is_empty() {
+            parts.push(text);
+        }
+        start += len;
+    }
+    parts
+}
+
+/// Предел куска для онлайн-провайдеров: запросы остаются маленькими
+/// (~0.8 МБ WAV), а распознавание — точным.
+pub const ONLINE_MAX_CHUNK_S: f32 = 28.0;
 
 /// Ищет центр самого тихого ~окна в пределах ±radius от `around`,
 /// чтобы резать речь по паузе, а не посреди слова.
@@ -274,4 +227,34 @@ pub fn quietest_point(samples: &[f32], around: usize, radius: usize) -> usize {
         pos += step;
     }
     best_start + win / 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_long;
+
+    /// Куски не длиннее предела, покрывают запись целиком и без пересечений.
+    #[test]
+    fn split_long_respects_limit_and_covers_everything() {
+        let rate = 16_000u32;
+        for (secs, max_s) in [(5.0f32, 28.0f32), (35.0, 28.0), (95.0, 28.0), (35.0, 8.0), (61.0, 8.0)] {
+            let n = (secs * rate as f32) as usize;
+            // «речь» с паузами каждые 3 c, чтобы было где резать
+            let samples: Vec<f32> = (0..n)
+                .map(|i| if (i / rate as usize) % 3 == 2 { 0.0 } else { ((i as f32) * 0.05).sin() * 0.3 })
+                .collect();
+            let mut covered = 0usize;
+            let mut max_piece = 0usize;
+            split_long(&samples, rate, max_s, |piece| {
+                covered += piece.len();
+                max_piece = max_piece.max(piece.len());
+                "x".into()
+            });
+            assert_eq!(covered, n, "{secs} c / предел {max_s}: покрыто не всё");
+            assert!(
+                max_piece as f32 <= max_s * rate as f32,
+                "{secs} c / предел {max_s}: кусок {max_piece} длиннее предела"
+            );
+        }
+    }
 }

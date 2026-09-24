@@ -1,43 +1,28 @@
-pub mod asr; // pub — используется примером examples/asr_smoke.rs
+// pub — используются тестовой утилитой examples/model_smoke.rs
+pub mod asr;
+pub mod models;
 mod audio;
+mod discovery;
 mod hotkey;
 mod island;
+mod online;
 mod output;
 mod platform;
 mod store;
+mod worker;
 
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use asr::ModelStatus;
 use store::SharedSettings;
-
-pub enum WorkerMsg {
-    LoadModel,
-    /// Промежуточный кусок записи (стриминг): распознаётся, пока
-    /// пользователь ещё говорит.
-    Partial {
-        session: u64,
-        samples: Vec<f32>,
-        sample_rate: u32,
-    },
-    /// Хвост записи: распознать, склеить с накопленными кусками и вставить.
-    Final {
-        session: u64,
-        samples: Vec<f32>,
-        sample_rate: u32,
-        duration_ms: u64,
-    },
-    /// Запись отменена — накопленные куски сессии выбросить.
-    CancelSession { session: u64 },
-}
+pub use worker::WorkerMsg;
 
 struct AppShared {
     settings: SharedSettings,
@@ -67,9 +52,11 @@ fn set_settings(
     let (old_autostart, old_keep) = {
         let current = store::read(&state.settings);
         // Хоткей меняется только через захват клавиши (его сохраняет
-        // контроллер). Страница может прислать устаревшее значение и
-        // затереть только что выбранную клавишу — поэтому берём текущее.
+        // контроллер), активная модель — только через model_activate.
+        // Страница может прислать устаревшие значения и затереть только
+        // что сделанный выбор — поэтому берём текущие.
         new_settings.hotkey = current.hotkey.clone();
+        new_settings.active_model = current.active_model.clone();
         (current.autostart, current.history_keep.clone())
     };
 
@@ -127,13 +114,166 @@ fn copy_text(text: String) -> Result<(), String> {
 
 #[tauri::command]
 fn get_model_status(state: State<AppShared>) -> serde_json::Value {
-    json!({ "status": asr::status_name(state.model_status.load(Ordering::Relaxed)) })
+    json!({
+        "status": asr::status_name(state.model_status.load(Ordering::Relaxed)),
+        "model": store::read(&state.settings).active_model,
+    })
+}
+
+// ------------------------------------------------------- менеджер моделей
+
+/// Всё для экрана моделей: каталог с состоянием установки и провайдеры.
+#[tauri::command(async)]
+fn models_overview(app: AppHandle) -> serde_json::Value {
+    let state = app.state::<AppShared>();
+    let (active, unload_after_min) = {
+        let s = store::read(&state.settings);
+        (s.active_model.clone(), s.unload_after_min)
+    };
+    let models: Vec<_> = models::catalog()
+        .models
+        .iter()
+        .map(|m| {
+            json!({
+                "id": m.id, "name": m.name, "vendor": m.vendor, "labels": m.labels,
+                "languages": m.languages, "languages_note": m.languages_note,
+                "english_only": m.english_only, "ram_mb": m.ram_mb, "size_mb": m.size_mb,
+                "speed": m.speed,
+                "download_mb": (m.download_bytes() as f64 / 1e6).round(),
+                "license": m.license, "homepage": m.homepage,
+                "installed": models::is_installed(&app, m),
+                "downloading": models::downloads().is_active(&m.id),
+            })
+        })
+        .collect();
+    let providers: Vec<_> = online::PROVIDERS
+        .iter()
+        .map(|p| {
+            let mut v = serde_json::to_value(p).unwrap_or_default();
+            v["has_key"] = json!(online::has_key(p.id));
+            v
+        })
+        .collect();
+    json!({
+        "active": active,
+        "status": asr::status_name(state.model_status.load(Ordering::Relaxed)),
+        "unload_after_min": unload_after_min,
+        "models": models,
+        "providers": providers,
+        "discovered": discovery::cached(&app),
+        "discovery_url": discovery::RELEASE_PAGE,
+    })
+}
+
+fn models_changed(app: &AppHandle) {
+    let _ = app.emit_to("settings", "models-changed", ());
+}
+
+/// Скачивание в фоне; если скачанная модель активна — сразу загружается.
+fn download_model(app: &AppHandle, spec: &'static models::ModelSpec) {
+    let state = app.state::<AppShared>();
+    let worker_tx = lock(&state.worker_tx).clone();
+    let settings = state.settings.clone();
+    let app2 = app.clone();
+    models::start_download(app.clone(), spec, move |ok| {
+        models_changed(&app2);
+        if ok && store::read(&settings).active_model == spec.id {
+            let _ = worker_tx.send(WorkerMsg::Reload);
+        }
+    });
+    models_changed(app);
 }
 
 #[tauri::command]
-fn start_model_download(app: AppHandle, state: State<AppShared>) {
-    let worker_tx = lock(&state.worker_tx).clone();
-    asr::spawn_download(app, state.model_status.clone(), worker_tx);
+fn model_download(app: AppHandle, id: String) -> Result<(), String> {
+    let spec = models::find(&id).ok_or("Unknown model")?;
+    download_model(&app, spec);
+    Ok(())
+}
+
+#[tauri::command]
+fn model_cancel_download(id: String) {
+    models::downloads().cancel(&id);
+}
+
+#[tauri::command(async)]
+fn model_delete(app: AppHandle, id: String) -> Result<(), String> {
+    let spec = models::find(&id).ok_or("Unknown model")?;
+    if store::read(&app.state::<AppShared>().settings).active_model == id {
+        return Err("Switch to another model before deleting this one".into());
+    }
+    models::delete(&app, spec).map_err(|e| format!("{e:#}"))?;
+    log::info!("модель {id} удалена");
+    models_changed(&app);
+    Ok(())
+}
+
+/// Сделать активным движком локальную модель (id) или онлайн-провайдера
+/// ("online:<id>").
+#[tauri::command]
+fn model_activate(app: AppHandle, id: String) -> Result<(), String> {
+    if let Some(p) = id.strip_prefix(store::ONLINE_PREFIX) {
+        let provider = online::provider(p).ok_or("Unknown provider")?;
+        if !online::has_key(provider.id) {
+            return Err(format!("Add an API key for {} first", provider.name));
+        }
+    } else {
+        let spec = models::find(&id).ok_or("Unknown model")?;
+        if !models::is_installed(&app, spec) {
+            return Err("Download the model first".into());
+        }
+    }
+    let state = app.state::<AppShared>();
+    {
+        let mut s = store::write(&state.settings);
+        s.active_model = id.clone();
+        store::save_settings(&app, &s);
+    }
+    log::info!("активный движок: {id}");
+    let _ = lock(&state.worker_tx).send(WorkerMsg::Reload);
+    models_changed(&app);
+    Ok(())
+}
+
+/// Проверяет ключ у провайдера и только потом сохраняет в Связку ключей.
+#[tauri::command(async)]
+fn provider_save_key(app: AppHandle, provider: String, key: String) -> Result<(), String> {
+    let p = online::provider(&provider).ok_or("Unknown provider")?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("Paste an API key".into());
+    }
+    online::verify_key(p, key).map_err(|e| e.to_string())?;
+    online::set_key(p.id, key).map_err(|e| e.to_string())?;
+    models_changed(&app);
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn provider_delete_key(app: AppHandle, provider: String) -> Result<(), String> {
+    let p = online::provider(&provider).ok_or("Unknown provider")?;
+    online::delete_key(p.id).map_err(|e| e.to_string())?;
+    // Ключ удалён у активного провайдера — возвращаемся к локальной модели.
+    let state = app.state::<AppShared>();
+    if store::read(&state.settings).online_provider() == Some(p.id) {
+        let fallback = first_installed_model(&app).unwrap_or(models::DEFAULT_MODEL);
+        {
+            let mut s = store::write(&state.settings);
+            s.active_model = fallback.to_string();
+            store::save_settings(&app, &s);
+        }
+        let _ = lock(&state.worker_tx).send(WorkerMsg::Reload);
+    }
+    models_changed(&app);
+    Ok(())
+}
+
+fn first_installed_model(app: &AppHandle) -> Option<&'static str> {
+    models::catalog()
+        .models
+        .iter()
+        .find(|m| models::is_installed(app, m))
+        .map(|m| m.id.as_str())
 }
 
 #[tauri::command]
@@ -172,7 +312,14 @@ fn open_permission_settings(which: String) {
 /// (страницы модели/проекта) — не общий проходной для произвольных URL.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
-    const ALLOWED: [&str; 3] = ["huggingface.co", "github.com", "www.nvidia.com"];
+    const ALLOWED: [&str; 6] = [
+        "huggingface.co",
+        "github.com",
+        "www.nvidia.com",
+        "platform.openai.com",
+        "console.groq.com",
+        "elevenlabs.io",
+    ];
     let ok = url::host(&url)
         .map(|h| ALLOWED.contains(&h.as_str()))
         .unwrap_or(false);
@@ -194,180 +341,6 @@ mod url {
         }
         Some(host.to_ascii_lowercase())
     }
-}
-
-#[tauri::command]
-fn model_info(app: AppHandle, state: State<AppShared>) -> serde_json::Value {
-    let paths = asr::model_paths(&app);
-    let size: u64 = std::fs::read_dir(&paths.dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter_map(|e| e.metadata().ok())
-                .map(|m| m.len())
-                .sum()
-        })
-        .unwrap_or(0);
-    json!({
-        "status": asr::status_name(state.model_status.load(Ordering::Relaxed)),
-        "dir": paths.dir.to_string_lossy(),
-        "size_bytes": size,
-    })
-}
-
-// ------------------------------------------------------------------ worker
-
-fn spawn_worker(
-    app: AppHandle,
-    rx: Receiver<WorkerMsg>,
-    model_status: ModelStatus,
-    settings: SharedSettings,
-) {
-    std::thread::spawn(move || {
-        let mut transcriber: Option<asr::Transcriber> = None;
-        // Накопленные куски текущей сессии записи (стриминг).
-        let mut current_session: u64 = 0;
-        let mut parts: Vec<String> = Vec::new();
-
-        for msg in rx {
-            // Паника на одном сообщении не должна убивать worker: иначе
-            // островок навсегда зависает в «Transcribing…».
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            match msg {
-                WorkerMsg::LoadModel => {
-                    asr::emit_status(&app, &model_status, asr::STATUS_LOADING, json!({}));
-                    let paths = asr::model_paths(&app);
-                    match asr::Transcriber::load(&paths) {
-                        Ok(t) => {
-                            let t0 = Instant::now();
-                            t.warmup();
-                            log::info!("модель загружена, прогрев {:?}", t0.elapsed());
-                            transcriber = Some(t);
-                            asr::emit_status(&app, &model_status, asr::STATUS_READY, json!({}));
-                        }
-                        Err(e) => {
-                            log::error!("загрузка модели: {e:#}");
-                            asr::emit_status(
-                                &app,
-                                &model_status,
-                                asr::STATUS_ERROR,
-                                json!({ "message": format!("{e:#}") }),
-                            );
-                        }
-                    }
-                }
-                WorkerMsg::Partial {
-                    session,
-                    samples,
-                    sample_rate,
-                } => {
-                    let Some(t) = transcriber.as_ref() else { return };
-                    if session != current_session {
-                        current_session = session;
-                        parts.clear();
-                    }
-                    let t0 = Instant::now();
-                    let text = t.transcribe_long(&samples, sample_rate);
-                    log::info!(
-                        "промежуточный кусок распознан за {:?}: {} символов",
-                        t0.elapsed(),
-                        text.chars().count()
-                    );
-                    if !text.is_empty() {
-                        parts.push(text);
-                    }
-                }
-                WorkerMsg::Final {
-                    session,
-                    samples,
-                    sample_rate,
-                    duration_ms,
-                } => {
-                    let (sounds, history_keep) = {
-                        let s = store::read(&settings);
-                        (s.sounds, s.history_keep.clone())
-                    };
-                    let Some(t) = transcriber.as_ref() else {
-                        island::set_state(&app, "error", Some("Model is not loaded".into()));
-                        return;
-                    };
-                    if session != current_session {
-                        current_session = session;
-                        parts.clear();
-                    }
-
-                    let t0 = Instant::now();
-                    let tail = t.transcribe_long(&samples, sample_rate);
-                    if !tail.is_empty() {
-                        parts.push(tail);
-                    }
-                    let text = parts.join(" ").trim().to_string();
-                    parts.clear();
-                    log::info!(
-                        "финал: хвост за {:?}, всего {} символов (запись {} мс)",
-                        t0.elapsed(),
-                        text.chars().count(),
-                        duration_ms
-                    );
-
-                    if text.is_empty() {
-                        island::set_state(&app, "error", Some("Didn't catch that".into()));
-                        if sounds {
-                            platform::play(platform::Sound::Error);
-                        }
-                        return;
-                    }
-
-                    match output::insert_text(&text) {
-                        // Текст уже на месте — островок схлопывается сразу,
-                        // без промежуточной «галочки».
-                        Ok(()) => island::set_state(&app, "idle", None),
-                        Err(e) => {
-                            log::error!("вставка: {e:#}");
-                            island::set_state(
-                                &app,
-                                "error",
-                                Some("Paste failed — text kept in clipboard".into()),
-                            );
-                        }
-                    }
-
-                    store::push_history(
-                        &app,
-                        store::HistoryEntry {
-                            text,
-                            ts_ms: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis() as u64)
-                                .unwrap_or(0),
-                            duration_ms,
-                        },
-                        &history_keep,
-                    );
-                }
-                WorkerMsg::CancelSession { session } => {
-                    if session == current_session {
-                        parts.clear();
-                    }
-                }
-            }
-            }));
-
-            if outcome.is_err() {
-                log::error!("паника в worker распознавания — сессия сброшена");
-                parts.clear();
-                if transcriber.is_none() {
-                    asr::emit_status(
-                        &app,
-                        &model_status,
-                        asr::STATUS_ERROR,
-                        json!({ "message": "model failed to load" }),
-                    );
-                }
-                island::set_state(&app, "error", Some("Something went wrong".into()));
-            }
-        }
-    });
 }
 
 // ------------------------------------------------------------------- setup
@@ -457,6 +430,41 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+enum StartupEngine {
+    Ready,
+    NeedsDownload(&'static models::ModelSpec),
+}
+
+/// Проверяет активный движок при запуске и чинит настройки, если он
+/// недоступен: модель удалили вручную, она пропала из каталога, у
+/// онлайн-провайдера нет ключа. Тогда — любая установленная модель,
+/// а на чистой машине — скачивание модели по умолчанию.
+fn resolve_startup_engine(app: &AppHandle, settings: &SharedSettings) -> StartupEngine {
+    let active = store::read(settings).active_model.clone();
+    let usable = match active.strip_prefix(store::ONLINE_PREFIX) {
+        Some(p) => online::provider(p).is_some() && online::has_key(p),
+        None => models::find(&active).is_some_and(|m| models::is_installed(app, m)),
+    };
+    if usable {
+        return StartupEngine::Ready;
+    }
+
+    let fallback = first_installed_model(app);
+    let id = fallback.unwrap_or(models::DEFAULT_MODEL);
+    if id != active {
+        log::warn!("активный движок {active} недоступен, переключаюсь на {id}");
+        let mut s = store::write(settings);
+        s.active_model = id.to_string();
+        store::save_settings(app, &s);
+    }
+    match fallback {
+        Some(_) => StartupEngine::Ready,
+        None => StartupEngine::NeedsDownload(
+            models::find(models::DEFAULT_MODEL).expect("модель по умолчанию есть в каталоге"),
+        ),
+    }
+}
+
 pub fn run() {
     init_logging();
 
@@ -485,7 +493,13 @@ pub fn run() {
             clear_history,
             copy_text,
             get_model_status,
-            start_model_download,
+            models_overview,
+            model_download,
+            model_cancel_download,
+            model_delete,
+            model_activate,
+            provider_save_key,
+            provider_delete_key,
             begin_hotkey_capture,
             cancel_hotkey_capture,
             cancel_recording,
@@ -493,7 +507,6 @@ pub fn run() {
             open_permission_settings,
             island_metrics,
             open_url,
-            model_info,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -506,7 +519,7 @@ pub fn run() {
             let model_status: ModelStatus = Arc::new(AtomicU8::new(asr::STATUS_MISSING));
             let (worker_tx, worker_rx) = channel::<WorkerMsg>();
 
-            spawn_worker(
+            worker::spawn(
                 handle.clone(),
                 worker_rx,
                 model_status.clone(),
@@ -526,19 +539,26 @@ pub fn run() {
             let keep = store::read(&settings).history_keep.clone();
             store::prune_history(&handle, &keep);
 
-            if asr::model_paths(&handle).exists() {
-                let _ = worker_tx.send(WorkerMsg::LoadModel);
-            } else {
-                asr::spawn_download(handle.clone(), model_status.clone(), worker_tx.clone());
-            }
+            let active = resolve_startup_engine(&handle, &settings);
 
             app.manage(AppShared {
                 settings,
                 model_status,
-                worker_tx: Mutex::new(worker_tx),
+                worker_tx: Mutex::new(worker_tx.clone()),
                 ctrl_tx: Mutex::new(hk.ctrl_tx),
                 capture: hk.capture,
             });
+
+            discovery::spawn_check(handle.clone());
+
+            match active {
+                // Первый запуск: ни одной модели на диске — качаем модель
+                // по умолчанию (после скачивания worker загрузит её сам).
+                StartupEngine::NeedsDownload(spec) => download_model(&handle, spec),
+                StartupEngine::Ready => {
+                    let _ = worker_tx.send(WorkerMsg::EnsureLoaded);
+                }
+            }
 
             // Без Accessibility/Input Monitoring ни хоткей, ни вставка
             // не работают — сразу показываем настройки с баннером.
