@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Typely records speech from the microphone while the hotkey is held to turn it into text. Audio is processed entirely on this device.</string>
+	<string>Voxy records speech from the microphone while the hotkey is held to turn it into text. Audio is processed entirely on this device.</string>
 	<key>LSUIElement</key>
 	<true/>
 </dict>

@@ -94,7 +94,7 @@ mod macos {
 
         let panel = PanelBuilder::<_, IslandPanel>::new(app, "island")
             .url(WebviewUrl::App("island.html".into()))
-            .title("Typely Island")
+            .title("Voxy Island")
             .position(tauri::Position::Logical(tauri::LogicalPosition { x, y }))
             .size(tauri::Size::Logical(tauri::LogicalSize {
                 width: WIDTH,
@@ -153,7 +153,7 @@ pub fn measure_metrics() -> IslandMetrics {
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
     let window = WebviewWindowBuilder::new(app, "island", WebviewUrl::App("island.html".into()))
-        .title("Typely Island")
+        .title("Voxy Island")
         .inner_size(WIDTH, HEIGHT)
         .decorations(false)
         .transparent(true)

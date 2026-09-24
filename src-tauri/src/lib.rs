@@ -345,8 +345,8 @@ mod url {
 
 // ------------------------------------------------------------------- setup
 
-/// Логи в файл (macOS: ~/Library/Logs/Typely.log, Windows:
-/// %LOCALAPPDATA%\Typely.log) — диагностика без запуска через пайпы.
+/// Логи в файл (macOS: ~/Library/Logs/Voxy.log, Windows:
+/// %LOCALAPPDATA%\Voxy.log) — диагностика без запуска через пайпы.
 /// VOICE_LOG_STDERR=1 — в stderr.
 fn init_logging() {
     let mut builder =
@@ -355,11 +355,11 @@ fn init_logging() {
         let path = if cfg!(target_os = "windows") {
             std::env::var("LOCALAPPDATA")
                 .ok()
-                .map(|d| std::path::Path::new(&d).join("Typely.log"))
+                .map(|d| std::path::Path::new(&d).join("Voxy.log"))
         } else {
             std::env::var("HOME")
                 .ok()
-                .map(|h| std::path::Path::new(&h).join("Library/Logs/Typely.log"))
+                .map(|h| std::path::Path::new(&h).join("Library/Logs/Voxy.log"))
         };
         if let Some(path) = path {
             if let Ok(file) = std::fs::OpenOptions::new()
@@ -405,7 +405,7 @@ fn show_settings(app: &AppHandle) {
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let settings_item = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
-    let quit_item = MenuItemBuilder::with_id("quit", "Quit Typely").build(app)?;
+    let quit_item = MenuItemBuilder::with_id("quit", "Quit Voxy").build(app)?;
     let menu = MenuBuilder::new(app)
         .item(&settings_item)
         .separator()
@@ -419,7 +419,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     TrayIconBuilder::with_id("main")
         .icon(icon)
         .icon_as_template(true)
-        .tooltip("Typely — local dictation")
+        .tooltip("Voxy — local dictation")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "settings" => show_settings(app),

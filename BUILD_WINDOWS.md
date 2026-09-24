@@ -1,4 +1,4 @@
-# Сборка Typely на Windows
+# Сборка Voxy на Windows
 
 ## Что понадобится (один раз)
 
@@ -30,7 +30,7 @@ cd voice\src-tauri
 cargo tauri build
 ```
 
-Готовый установщик: `src-tauri\target\release\bundle\nsis\Typely_0.1.0_x64-setup.exe`.
+Готовый установщик: `src-tauri\target\release\bundle\nsis\Voxy_0.1.0_x64-setup.exe`.
 Для разработки — `cargo tauri dev` (запускает приложение сразу).
 
 ## Первый запуск
@@ -49,7 +49,7 @@ cargo tauri build
 - Островок в покое скрыт (нет выреза камеры) и выезжает сверху при записи.
 - Вставка — синтетический **Ctrl+V** (виртуальный код, работает на любой раскладке).
 - Звуки — системные алиасы Windows.
-- Лог: `%LOCALAPPDATA%\Typely.log`.
+- Лог: `%LOCALAPPDATA%\Voxy.log`.
 
 ## Ускорение на NVIDIA GPU (опционально, потом)
 

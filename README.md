@@ -1,4 +1,4 @@
-# Typely — локальный голосовой ввод для macOS
+# Voxy — локальный голосовой ввод для macOS
 
 Аналог Spokenly для личного использования: удерживаете **правый ⌘** — идёт запись
 (у выреза камеры анимируется «островок»), отпускаете — речь локально распознаётся
@@ -23,7 +23,7 @@ cd src-tauri
 cargo tauri dev
 ```
 
-Сборка приложения: `cargo tauri build` → `src-tauri/target/release/bundle/macos/Typely.app`.
+Сборка приложения: `cargo tauri build` → `src-tauri/target/release/bundle/macos/Voxy.app`.
 
 Модель (~670 МБ) скачивается автоматически при первом запуске в
 `~/Library/Application Support/com.dizraid.voice/models/`.
@@ -61,7 +61,7 @@ OpenAI `gpt-transcribe`, Groq `whisper-large-v3-turbo`, ElevenLabs `scribe_v2`.
 
 System Settings → **Privacy & Security**:
 
-1. **Accessibility (Универсальный доступ)** — добавьте Typely.app (при dev-запуске —
+1. **Accessibility (Универсальный доступ)** — добавьте Voxy.app (при dev-запуске —
    ваш терминал). Нужно и для глобальной горячей клавиши, и для синтетического ⌘V.
    Без него всё «молча» не работает. Перезапуск не обязателен: приложение само
    подхватит разрешение в течение пары секунд после выдачи.
@@ -69,7 +69,7 @@ System Settings → **Privacy & Security**:
 3. Если хоткей не срабатывает после п.1 — добавьте приложение ещё и в
    **Input Monitoring (Мониторинг ввода)**.
 
-Логи пишутся в `~/Library/Logs/Typely.log` (переменная `VOICE_LOG_STDERR=1`
+Логи пишутся в `~/Library/Logs/Voxy.log` (переменная `VOICE_LOG_STDERR=1`
 переключает вывод в stderr). Приложение одноэкземплярное: повторный запуск
 просто открывает окно настроек уже работающей копии.
 

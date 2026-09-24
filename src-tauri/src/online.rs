@@ -251,7 +251,7 @@ fn multipart(
     file: &[u8],
 ) -> (String, Vec<u8>) {
     let boundary = format!(
-        "typely-{:x}",
+        "voxy-{:x}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -311,10 +311,10 @@ mod tests {
     #[ignore]
     fn fake_keys_are_rejected_clearly() {
         for p in &PROVIDERS {
-            let err = verify_key(p, "sk-typely-fake-key-000000").unwrap_err().to_string();
+            let err = verify_key(p, "sk-voxy-fake-key-000000").unwrap_err().to_string();
             println!("{}: {err}", p.name);
             assert!(err.contains("rejected"), "{}: {err}", p.name);
-            let engine = OnlineEngine { provider: p, key: "sk-typely-fake-key-000000".into() };
+            let engine = OnlineEngine { provider: p, key: "sk-voxy-fake-key-000000".into() };
             let err = engine.transcribe(&vec![0.0; 16_000], 16_000).unwrap_err().to_string();
             println!("{} transcribe: {err}", p.name);
             assert!(err.contains("invalid API key"), "{}: {err}", p.name);
