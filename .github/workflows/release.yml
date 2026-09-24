@@ -1,19 +1,24 @@
 # Build release bundles and publish them as a GitHub release.
 #
 # Trigger: push a tag named v<version>, where <version> is "version" in
-# src-tauri/tauri.conf.json (e.g. v0.1.0), or run the workflow by hand.
-# Either way the release is named after the tauri.conf.json version.
+# src-tauri/tauri.conf.json (e.g. v0.1.0). The tagged commit must be on main.
+# There is no manual trigger: a release is always built from a v* tag.
 #
 # Jobs:
-#   check-version   the tag matches tauri.conf.json, and that version is not
-#                   published yet
+#   check-version   the tag matches tauri.conf.json, the tagged commit is on
+#                   main, and that version is not published yet
 #   create-release  deletes drafts that earlier runs left for this version and
-#                   creates one new draft. Both builds upload into it by its
-#                   id: if each build created its own draft, two builds that
-#                   finish at the same time could create two.
-#   build           macOS (Apple Silicon) and Windows (x64) bundles
-#   publish         checks the macOS app that install.sh will download, then
-#                   publishes the draft (not a pre-release, marked Latest)
+#                   creates one new draft (its id goes to publish)
+#   build           macOS (Apple Silicon) and Windows (x64) bundles, uploaded
+#                   as workflow artifacts. Read-only token: this job runs the
+#                   whole third-party build graph (crates' build scripts and
+#                   proc macros, the Tauri CLI), so it gets no write access
+#                   and no token in its environment.
+#   publish         checks the macOS app that install.sh will download,
+#                   attests the files (Sigstore build provenance), uploads
+#                   them into the draft, compares each upload's SHA-256 with
+#                   the checked file and publishes the draft (marked Latest).
+#                   It runs no repository or third-party build code.
 #
 # install.sh at the repository root downloads the .app.tar.gz from
 # https://api.github.com/repos/<owner>/<repo>/releases/latest, so a release
@@ -22,21 +27,22 @@
 # failed Windows build doesn't block publishing (the Windows port is
 # experimental).
 #
-# Output (file names as tauri-action v1 uploads them, for version 0.1.0):
+# Output (for version 0.1.0):
 #   macOS (Apple Silicon): Voxy_0.1.0_aarch64.app.tar.gz  (used by install.sh)
 #                          Voxy_0.1.0_aarch64.dmg
 #   Windows (x64):         Voxy_0.1.0_x64-setup.exe       (NSIS installer)
 #
-# The project has no package.json, so tauri-action installs the Tauri CLI
-# itself (npm install -g @tauri-apps/cli@v2) and runs `tauri build` in
-# projectPath. Nothing else is needed for that.
+# Supply chain: third-party actions are pinned to full commit SHAs (Dependabot
+# bumps them), the Tauri CLI and the Rust toolchain to exact versions, and the
+# sherpa-onnx static libraries linked into the app to the SHA-256 values in
+# src-tauri/sherpa-onnx.sha256. When the tauri crate in Cargo.lock moves to a
+# new minor version, bump TAURI_CLI_VERSION below with it.
 
 name: Release
 
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -47,6 +53,12 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+env:
+  # npm package @tauri-apps/cli; npm never lets a published version change.
+  TAURI_CLI_VERSION: "2.11.5"
+  # rustc that builds the release (v0.1.0 was built with 1.98.1).
+  RUST_TOOLCHAIN: "1.98.1"
+
 jobs:
   # Cheap check on Linux before the expensive macOS/Windows builds start.
   check-version:
@@ -56,7 +68,11 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # full history and all branches, for the "is it on main" check
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Compare tag with app version
         id: version
@@ -67,12 +83,26 @@ jobs:
           set -euo pipefail
           conf=$(jq -r .version src-tauri/tauri.conf.json)
           crate=$(awk -F'"' '/^version = / { print $2; exit }' src-tauri/Cargo.toml)
-          echo "tauri.conf.json: $conf, Cargo.toml: $crate, ref: $GITHUB_REF_NAME"
+          echo "tauri.conf.json: $conf, Cargo.toml: $crate, ref: $GITHUB_REF_TYPE $GITHUB_REF_NAME, commit: $GITHUB_SHA"
+          if ! [[ "$conf" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The version in src-tauri/tauri.conf.json ($conf) is not MAJOR.MINOR.PATCH."
+            exit 1
+          fi
           if [ "$crate" != "$conf" ]; then
             echo "::warning::Cargo.toml version ($crate) differs from tauri.conf.json ($conf); bundles use $conf"
           fi
-          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$conf" ]; then
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::Releases are built only from a v* tag."
+            exit 1
+          fi
+          if [ "$GITHUB_REF_NAME" != "v$conf" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match version $conf in src-tauri/tauri.conf.json (expected v$conf)"
+            exit 1
+          fi
+          # A tag on an unmerged branch must not become the release every
+          # install command downloads.
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main. Merge first, then tag a commit on main."
             exit 1
           fi
           # Stop before the builds if this version is already out.
@@ -104,7 +134,7 @@ jobs:
           # Drafts of this version from earlier runs (a failed build, a re-run
           # of the whole workflow) would mix old assets into the release.
           # ("Re-run failed jobs" keeps this job's result and uploads into the
-          # same draft.)
+          # same draft; publish replaces assets with the same name.)
           old=$(gh api --paginate "repos/$GH_REPO/releases" \
             --jq ".[] | select(.draft and .tag_name == \"$tag\") | .id")
           for id in $old; do
@@ -137,6 +167,10 @@ jobs:
           ## Windows 10/11, x64 (experimental)
 
           The `-setup.exe` installer, when the Windows build succeeded. The Windows port has not been tested yet. SmartScreen may warn about an unknown publisher: click More info → Run anyway.
+
+          ## Verifying a download
+
+          Every file here was built by this repository's release workflow, which signed a build provenance attestation for it. With the GitHub CLI: `gh attestation verify <file> -R DIZRAID/voxy --signer-workflow DIZRAID/voxy/.github/workflows/release.yml`. See SECURITY.md.
           EOF
 
           id=$(jq -n --arg tag "$tag" --arg name "Voxy $tag" --arg sha "$GITHUB_SHA" --rawfile body "$notes" \
@@ -147,11 +181,13 @@ jobs:
 
   build:
     name: ${{ matrix.name }}
-    needs: create-release
+    needs: check-version
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout }}
+    # Read-only: see the header. The bundles leave this job only as workflow
+    # artifacts; publish uploads them into the release.
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -160,20 +196,53 @@ jobs:
             os: macos-latest
             target: aarch64-apple-darwin
             # bundle.targets in tauri.conf.json has no "dmg", so ask for it here.
-            args: --target aarch64-apple-darwin --bundles app,dmg
+            bundles: app,dmg
+            # archive_name() in sherpa-onnx-sys's build.rs
+            sherpa_archive: osx-arm64-static-lib
+            artifact: bundle-macos
             timeout: 60
           - name: Windows (x64)
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            args: --target x86_64-pc-windows-msvc --bundles nsis
+            bundles: nsis
+            sherpa_archive: win-x64-static-MT-Release-lib
+            artifact: bundle-windows
             timeout: 90
 
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-25
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
+
+      # The sherpa-onnx build script would download these libraries itself,
+      # without checking any hash. The script checks the pinned SHA-256 and
+      # sets SHERPA_ONNX_LIB_DIR, so the build script downloads nothing.
+      - name: Fetch and verify sherpa-onnx static libraries
+        shell: bash
+        env:
+          SHERPA_ARCHIVE: ${{ matrix.sherpa_archive }}
+        run: bash .github/scripts/fetch-sherpa-onnx.sh "$SHERPA_ARCHIVE"
+
+      # Exact version, no install scripts (the package has none). The CLI
+      # drives cargo, bundling, the .dmg and code signing.
+      - name: Install the Tauri CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global --ignore-scripts "@tauri-apps/cli@$TAURI_CLI_VERSION"
+          cli="$(npm root --global)/@tauri-apps/cli/tauri.js"
+          got=$(node "$cli" --version)
+          echo "$got"
+          if [ "$got" != "tauri-cli $TAURI_CLI_VERSION" ]; then
+            echo "::error::Expected tauri-cli $TAURI_CLI_VERSION, got: $got"
+            exit 1
+          fi
+          echo "TAURI_CLI=$cli" >>"$GITHUB_ENV"
 
       # Ad-hoc code signature ("-": no certificate, no Apple account). Tauri then
       # runs `codesign --force -s - --options runtime --entitlements
@@ -191,10 +260,13 @@ jobs:
         run: echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
 
       # No Rust cache here on purpose: releases are rare and are built from
-      # scratch. The sherpa-onnx build script downloads its static libraries.
-      - uses: tauri-apps/tauri-action@v1
+      # scratch.
+      - name: Build
+        shell: bash
+        working-directory: src-tauri
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ matrix.target }}
+          BUNDLES: ${{ matrix.bundles }}
           # Windows: link the VC++ runtime statically, so the app starts on PCs
           # without the VC++ Redistributable (the installer doesn't ship it).
           # The locked tauri-build (2.6.3) only reads this variable. Tauri CLI
@@ -202,10 +274,14 @@ jobs:
           # that in favour of the build.windows.staticVCRuntime config key,
           # which tauri-build 2.6.3 doesn't read. macOS builds ignore it.
           STATIC_VCRUNTIME: "true"
+          # What tauri-action v1 set for the .dmg (lay out the window with
+          # Finder even on CI).
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
 
           # Developer ID signing and notarization are not set up. To switch to
-          # them (macOS job only), add these as repository secrets, uncomment
-          # them and remove the ad-hoc step above:
+          # them (macOS job only), keep the certificate in a protected GitHub
+          # Environment (required reviewer, v* tags only), add these, and
+          # remove the ad-hoc step above:
           # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}                 # base64 of the Developer ID .p12
           # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}       # "Developer ID Application: Name (TEAMID)"
@@ -226,67 +302,109 @@ jobs:
           # Windows signing is configured in tauri.conf.json
           # (bundle.windows.certificateThumbprint or bundle.windows.signCommand),
           # not through environment variables.
+        run: |
+          set -euo pipefail
+          # One retry, as tauri-action did: .dmg creation (hdiutil) is flaky
+          # on CI runners, and the compiled code is reused.
+          if ! node "$TAURI_CLI" build --target "$TARGET" --bundles "$BUNDLES"; then
+            echo "::warning::tauri build failed; retrying once"
+            sleep 10
+            node "$TAURI_CLI" build --target "$TARGET" --bundles "$BUNDLES"
+          fi
+
+      - name: Collect the bundles
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bundle="src-tauri/target/$TARGET/release/bundle"
+          mkdir dist
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # Voxy.app at the root of the archive, packed like tauri-action v1
+            # did; install.sh and the publish job expect exactly that.
+            tar -czf "dist/Voxy_${VERSION}_aarch64.app.tar.gz" -C "$bundle/macos" Voxy.app
+            cp "$bundle/dmg/Voxy_${VERSION}_aarch64.dmg" dist/
+          else
+            cp "$bundle/nsis/Voxy_${VERSION}_x64-setup.exe" dist/
+          fi
+          cd dist
+          ls -l
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum -- *; else shasum -a 256 -- *; fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          projectPath: src-tauri
-          args: ${{ matrix.args }}
-          # Upload into the draft made by create-release (its name and notes
-          # are set there).
-          releaseId: ${{ needs.create-release.outputs.id }}
-          # No updater is configured, so there is no latest.json to publish.
-          uploadUpdaterJson: false
-          # Re-runs `tauri build` once if it fails (e.g. a flaky hdiutil during
-          # .dmg creation); compiled code is reused, so a retry is quick.
-          retryAttempts: 1
+          name: ${{ matrix.artifact }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+          # .tar.gz, .dmg and .exe are compressed already
+          compression-level: 0
 
   publish:
     name: Publish
-    needs: [create-release, build]
+    needs: [check-version, create-release, build]
     # Also after a failed Windows build: the macOS app is what counts, and the
-    # step below checks what was actually uploaded.
+    # steps below require it.
     if: ${{ !cancelled() && needs.create-release.result == 'success' }}
     # macOS for codesign, to check the app the way install.sh gets it.
     runs-on: macos-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
-      contents: write
+      contents: write # upload into the draft and publish it
+      id-token: write # Sigstore certificate for the attestation
+      attestations: write # store the attestation
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_ID: ${{ needs.create-release.outputs.id }}
+      VERSION: ${{ needs.check-version.outputs.version }}
     steps:
-      - name: Check the macOS app and publish the release
+      # Each artifact into its own directory, by exact name: a Windows
+      # artifact can't replace a macOS file of the same name.
+      - name: Download the macOS bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bundle-macos
+          path: artifacts/macos
+
+      - name: Download the Windows bundle
+        id: windows
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bundle-windows
+          path: artifacts/windows
+
+      # Check the archive install.sh downloads: Voxy.app at its root, a valid
+      # sealed signature, the hardened runtime and the microphone entitlement
+      # (without it Voxy would record silence). A Tauri CLI that signed
+      # differently would stop here, before anyone installs it. The upload
+      # step then proves (SHA-256) that the release gets these exact bytes.
+      - name: Check the macOS app
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_ID: ${{ needs.create-release.outputs.id }}
+          WINDOWS_OUTCOME: ${{ steps.windows.outcome }}
         run: |
           set -euo pipefail
-          rel="repos/$GH_REPO/releases/$RELEASE_ID"
-          json="$RUNNER_TEMP/release.json"
-          gh api "$rel" >"$json"
-          tag=$(jq -r .tag_name "$json")
-          if [ "$(jq -r .draft "$json")" != "true" ]; then
-            echo "::error::Release $tag is not a draft any more."
-            exit 1
-          fi
-          # Only assets whose upload finished: an interrupted upload can leave
-          # an entry in another state.
-          assets=$(jq -r '.assets[] | select(.state == "uploaded" and .size > 0) | .name' "$json")
-          printf 'Assets of %s:\n%s\n' "$tag" "$assets"
-          # Matched by suffix, like install.sh does.
-          for suffix in _aarch64.app.tar.gz _aarch64.dmg; do
-            if ! grep -q -- "${suffix//./\\.}\$" <<<"$assets"; then
-              echo "::error::No complete *$suffix asset, so $tag stays a draft (install.sh needs the macOS build)."
+          mkdir upload
+          app_tgz="Voxy_${VERSION}_aarch64.app.tar.gz"
+          dmg="Voxy_${VERSION}_aarch64.dmg"
+          for f in "$app_tgz" "$dmg"; do
+            if [ ! -s "artifacts/macos/$f" ]; then
+              echo "::error::The macOS build has no $f, so the release stays a draft (install.sh needs the macOS build)."
               exit 1
             fi
+            cp "artifacts/macos/$f" upload/
           done
-          if ! grep -q -- '-setup\.exe$' <<<"$assets"; then
-            echo "::warning::The Windows installer is missing; publishing $tag without it."
+          exe="Voxy_${VERSION}_x64-setup.exe"
+          if [ "$WINDOWS_OUTCOME" = "success" ] && [ -s "artifacts/windows/$exe" ]; then
+            cp "artifacts/windows/$exe" upload/
+          else
+            echo "::warning::The Windows installer is missing; publishing v$VERSION without it."
           fi
 
-          # Check the archive install.sh downloads: Voxy.app at its root, a
-          # valid sealed signature, the hardened runtime and the microphone
-          # entitlement (without it Voxy would record silence). A Tauri CLI
-          # that signed differently would stop here, before anyone installs it.
-          asset=$(jq -r '[.assets[] | select(.state == "uploaded" and (.name | endswith("_aarch64.app.tar.gz")))][0].id' "$json")
-          archive="$RUNNER_TEMP/Voxy.app.tar.gz"
-          gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$asset" >"$archive"
+          archive="upload/$app_tgz"
           tar -tzf "$archive" >"$RUNNER_TEMP/files.txt"
           if ! grep -qE '^(\./)?Voxy\.app/Contents/Info\.plist$' "$RUNNER_TEMP/files.txt"; then
             echo "::error::The .app.tar.gz does not have Voxy.app at its root."
@@ -316,6 +434,55 @@ jobs:
             echo "::error::Voxy.app lacks the com.apple.security.device.audio-input entitlement, so it could not record."
             exit 1
           fi
+          (cd upload && ls -l && shasum -a 256 -- *)
+
+      # Signed build provenance (Sigstore) for every file: binds it to this
+      # workflow, commit and tag. Anyone can check a download with
+      # `gh attestation verify <file> -R DIZRAID/voxy --signer-workflow DIZRAID/voxy/.github/workflows/release.yml`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: upload/*
+
+      - name: Upload into the draft and publish
+        run: |
+          set -euo pipefail
+          rel="repos/$GH_REPO/releases/$RELEASE_ID"
+          json="$RUNNER_TEMP/release.json"
+          gh api "$rel" >"$json"
+          tag=$(jq -r .tag_name "$json")
+          if [ "$(jq -r .draft "$json")" != "true" ]; then
+            echo "::error::Release $tag is not a draft any more."
+            exit 1
+          fi
+          if [ "$tag" != "v$VERSION" ]; then
+            echo "::error::Draft $RELEASE_ID is for $tag, not v$VERSION."
+            exit 1
+          fi
+
+          for path in upload/*; do
+            name=${path##*/}
+            sha=$(shasum -a 256 "$path" | cut -d' ' -f1)
+            # A re-run of this job finds its earlier uploads in the draft.
+            for old in $(jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id' "$json"); do
+              echo "Replacing the earlier upload of $name"
+              gh api -X DELETE "repos/$GH_REPO/releases/assets/$old"
+            done
+            echo "Uploading $name (sha256:$sha)"
+            asset=$(gh api -X POST -H 'Content-Type: application/octet-stream' \
+              "https://uploads.github.com/repos/$GH_REPO/releases/$RELEASE_ID/assets?name=$name" \
+              --input "$path")
+            digest=$(jq -r '.digest // empty' <<<"$asset")
+            if [ -z "$digest" ]; then
+              # No digest in the answer: hash what the release now serves.
+              digest="sha256:$(gh api -H 'Accept: application/octet-stream' \
+                "repos/$GH_REPO/releases/assets/$(jq -r .id <<<"$asset")" | shasum -a 256 | cut -d' ' -f1)"
+            fi
+            if [ "$digest" != "sha256:$sha" ]; then
+              echo "::error::$name: the release has $digest, the checked file is sha256:$sha."
+              exit 1
+            fi
+          done
 
           url=$(gh api -X PATCH "$rel" -F draft=false -F prerelease=false -f make_latest=true --jq .html_url)
           echo "Published $tag: $url"

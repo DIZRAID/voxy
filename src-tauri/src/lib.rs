@@ -1,6 +1,8 @@
 // pub — используются тестовой утилитой examples/model_smoke.rs
 pub mod asr;
 pub mod models;
+#[cfg(test)]
+mod app_commands;
 mod audio;
 mod discovery;
 mod hotkey;
@@ -12,7 +14,7 @@ mod store;
 mod worker;
 
 use serde_json::json;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -29,7 +31,7 @@ struct AppShared {
     model_status: ModelStatus,
     worker_tx: Mutex<Sender<WorkerMsg>>,
     ctrl_tx: Mutex<Sender<hotkey::Ctrl>>,
-    capture: Arc<AtomicBool>,
+    capture: Arc<hotkey::Capture>,
 }
 
 // ---------------------------------------------------------------- commands
@@ -95,9 +97,12 @@ fn list_mics() -> Vec<String> {
     audio::list_input_devices()
 }
 
+/// История с учётом срока хранения: записи старше срока не показываются
+/// и тут же удаляются с диска, даже если приложение работает неделями.
 #[tauri::command(async)]
-fn get_history(app: AppHandle) -> Vec<store::HistoryEntry> {
-    store::load_history(&app)
+fn get_history(app: AppHandle, state: State<AppShared>) -> Vec<store::HistoryEntry> {
+    let keep = store::read(&state.settings).history_keep.clone();
+    store::load_history(&app, &keep)
 }
 
 #[tauri::command(async)]
@@ -259,10 +264,7 @@ fn model_activate(app: AppHandle, id: String) -> Result<(), String> {
 #[tauri::command(async)]
 fn provider_save_key(app: AppHandle, provider: String, key: String) -> Result<(), String> {
     let p = online::provider(&provider).ok_or("Unknown provider")?;
-    let key = key.trim();
-    if key.is_empty() {
-        return Err("Paste an API key".into());
-    }
+    let key = online::clean_key(&key)?;
     online::verify_key(p, key).map_err(|e| e.to_string())?;
     online::set_key(p.id, key).map_err(|e| e.to_string())?;
     models_changed(&app);
@@ -296,14 +298,17 @@ fn first_installed_model(app: &AppHandle) -> Option<&'static str> {
         .map(|m| m.id.as_str())
 }
 
+/// Следующая клавиша (в течение hotkey::CAPTURE_WINDOW и пока окно
+/// настроек в фокусе) станет хоткеем; итог приходит событием
+/// hotkey-captured.
 #[tauri::command]
 fn begin_hotkey_capture(state: State<AppShared>) {
-    state.capture.store(true, Ordering::Relaxed);
+    state.capture.begin();
 }
 
 #[tauri::command]
 fn cancel_hotkey_capture(state: State<AppShared>) {
-    state.capture.store(false, Ordering::Relaxed);
+    state.capture.cancel();
 }
 
 /// Геометрия выреза для island.js — размеры пилюли строятся от неё.
@@ -332,18 +337,7 @@ fn open_permission_settings(which: String) {
 /// (страницы модели/проекта) — не общий проходной для произвольных URL.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
-    const ALLOWED: [&str; 6] = [
-        "huggingface.co",
-        "github.com",
-        "www.nvidia.com",
-        "platform.openai.com",
-        "console.groq.com",
-        "elevenlabs.io",
-    ];
-    let ok = url::host(&url)
-        .map(|h| ALLOWED.contains(&h.as_str()))
-        .unwrap_or(false);
-    if !url.starts_with("https://") || !ok {
+    if !url::allowed(&url) {
         return Err("url not allowed".into());
     }
     platform::open_external(&url);
@@ -352,6 +346,27 @@ fn open_url(url: String) -> Result<(), String> {
 
 /// Крошечный парсер хоста, чтобы не тянуть крейт url ради одной проверки.
 mod url {
+    const ALLOWED_HOSTS: [&str; 6] = [
+        "huggingface.co",
+        "github.com",
+        "www.nvidia.com",
+        "platform.openai.com",
+        "console.groq.com",
+        "elevenlabs.io",
+    ];
+
+    /// https, хост из списка и только «безопасные» символы: URL уходит
+    /// аргументом в open / explorer.exe, а explorer по-своему разбирает
+    /// запятые и кавычки. Пробелы, управляющие символы и не-ASCII не нужны
+    /// ни одной ссылке приложения.
+    pub fn allowed(url: &str) -> bool {
+        url.len() <= 2048
+            && url
+                .bytes()
+                .all(|b| b.is_ascii_graphic() && !b"\"\\<>^`{|},".contains(&b))
+            && host(url).is_some_and(|h| ALLOWED_HOSTS.contains(&h.as_str()))
+    }
+
     pub fn host(url: &str) -> Option<String> {
         let rest = url.strip_prefix("https://")?;
         let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
@@ -371,6 +386,12 @@ mod url {
 fn init_logging() {
     let mut builder =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    // Отладочный лог ureq печатает заголовки запросов и скрывает только
+    // Authorization и Cookie: ключ ElevenLabs (xi-api-key) попал бы в файл.
+    // Поэтому ureq — не подробнее warn, что бы ни стояло в RUST_LOG
+    // (директива для того же модуля заменяет пришедшую из RUST_LOG).
+    builder.filter_module("ureq", log::LevelFilter::Warn);
+    builder.filter_module("ureq::unit", log::LevelFilter::Warn);
     if std::env::var("VOXY_LOG_STDERR").is_err() {
         let path = if cfg!(target_os = "windows") {
             std::env::var("LOCALAPPDATA")
@@ -430,14 +451,20 @@ fn show_settings(app: &AppHandle) {
         Ok(window) => {
             #[cfg(target_os = "macos")]
             force_dark_appearance(&window);
-            // Окно закрыли посреди захвата хоткея — снимаем флаг, иначе
+            // Захват хоткея принимает клавишу, только пока это окно в
+            // фокусе. Окно закрыли посреди захвата — снимаем его, иначе
             // следующая клавиша в любом приложении стала бы хоткеем.
             if let Some(state) = app.try_state::<AppShared>() {
                 let capture = state.capture.clone();
-                window.on_window_event(move |event| {
-                    if matches!(event, tauri::WindowEvent::Destroyed) {
-                        capture.store(false, Ordering::Relaxed);
+                window.on_window_event(move |event| match event {
+                    tauri::WindowEvent::Focused(focused) => {
+                        capture.set_settings_focused(*focused);
                     }
+                    tauri::WindowEvent::Destroyed => {
+                        capture.set_settings_focused(false);
+                        capture.cancel();
+                    }
+                    _ => {}
                 });
             }
             let _ = window.show();
@@ -494,6 +521,19 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+/// Срок хранения истории соблюдается и когда приложение неделями не
+/// перезапускают и ничего не диктуют: раз в час старые записи удаляются.
+fn spawn_history_pruner(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+        let Some(state) = app.try_state::<AppShared>() else {
+            continue;
+        };
+        let keep = store::read(&state.settings).history_keep.clone();
+        store::prune_history(&app, &keep);
+    });
 }
 
 enum StartupEngine {
@@ -614,6 +654,7 @@ pub fn run() {
             });
 
             discovery::spawn_check(handle.clone());
+            spawn_history_pruner(handle.clone());
 
             match active {
                 // Первый запуск: ни одной модели на диске — качаем модель
@@ -715,5 +756,180 @@ mod tests {
         let key = "<key>com.apple.security.device.audio-input</key>";
         let after = &plist[plist.find(key).expect("audio-input") + key.len()..];
         assert!(after.trim_start().starts_with("<true/>"));
+    }
+
+    /// Каждое окно получает только нужные ему команды (build.rs включает
+    /// проверку ACL для команд приложения). Островок — только события,
+    /// геометрию выреза и отмену записи; окно настроек — остальное.
+    #[test]
+    fn ipc_is_scoped_per_window() {
+        use crate::app_commands::APP_COMMANDS;
+        use std::collections::BTreeSet;
+
+        // Никаких других файлов capabilities (например, прежнего default.json
+        // с core:default для обоих окон).
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        let files: BTreeSet<String> = std::fs::read_dir(dir)
+            .expect("capabilities/")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(files, BTreeSet::from(["island.json".into(), "settings.json".into()]));
+
+        let parse = |s: &str| -> (Vec<String>, BTreeSet<String>) {
+            let v: serde_json::Value = serde_json::from_str(s).expect("capability json");
+            let list = |k: &str| -> Vec<String> {
+                v[k].as_array()
+                    .expect(k)
+                    .iter()
+                    .map(|p| p.as_str().expect("string").to_string())
+                    .collect()
+            };
+            (list("windows"), list("permissions").into_iter().collect())
+        };
+        let (island_windows, island) = parse(include_str!("../capabilities/island.json"));
+        let (settings_windows, settings) = parse(include_str!("../capabilities/settings.json"));
+        assert_eq!(island_windows, ["island"]);
+        assert_eq!(settings_windows, ["settings"]);
+
+        let expected_island: BTreeSet<String> = [
+            "core:event:allow-listen",
+            "core:event:allow-unlisten",
+            "allow-island-metrics",
+            "allow-cancel-recording",
+        ]
+        .map(String::from)
+        .into();
+        assert_eq!(island, expected_island);
+
+        // Каждая команда приложения разрешена ровно одному окну, и
+        // разрешений на несуществующие команды нет.
+        let allow = |c: &str| format!("allow-{}", c.replace('_', "-"));
+        for cmd in APP_COMMANDS {
+            let p = allow(cmd);
+            let n = island.contains(&p) as u8 + settings.contains(&p) as u8;
+            assert_eq!(n, 1, "{cmd}: разрешена {n} окнам");
+        }
+        let known: BTreeSet<String> = APP_COMMANDS.iter().map(|c| allow(c)).collect();
+        for p in island.iter().chain(&settings) {
+            assert!(
+                p.starts_with("core:") || known.contains(p),
+                "{p}: нет такой команды в app_commands.rs"
+            );
+        }
+        // Из core — только то, что реально зовут страницы (event.listen,
+        // app.getVersion, перетаскивание окна), без наборов вроде core:default.
+        for p in island.iter().chain(&settings).filter(|p| p.starts_with("core:")) {
+            assert!(p.contains(":allow-"), "{p}: только отдельные allow-разрешения");
+        }
+
+        // Список для ACL совпадает с generate_handler!: команда, которой нет
+        // в списке, была бы отклонена в любом окне.
+        let src = include_str!("lib.rs");
+        let start = src.find("generate_handler![").expect("generate_handler!") + 18;
+        let end = start + src[start..].find(']').expect("]");
+        let handlers: BTreeSet<&str> = src[start..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let listed: BTreeSet<&str> = APP_COMMANDS.iter().copied().collect();
+        assert_eq!(handlers, listed);
+    }
+
+    /// Строгая CSP: без inline-скриптов и стилей, без внешних адресов;
+    /// IPC ходит через ipc: (macOS) и http://ipc.localhost (Windows).
+    #[test]
+    fn csp_is_strict() {
+        let config: tauri::Config =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        let sec = &config.app.security;
+        let csp = sec.csp.as_ref().expect("security.csp задана").to_string();
+        for d in [
+            "default-src 'none'",
+            "script-src 'self'",
+            "style-src 'self'",
+            "connect-src ipc: http://ipc.localhost",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'none'",
+            "frame-ancestors 'none'",
+        ] {
+            assert!(csp.contains(d), "в CSP нет «{d}»: {csp}");
+        }
+        for bad in ["unsafe-inline", "unsafe-eval", "http:", "https:", "data:", "blob:", "*"] {
+            let without_ipc = csp.replace("http://ipc.localhost", "");
+            assert!(!without_ipc.contains(bad), "в CSP есть «{bad}»: {csp}");
+        }
+        assert!(sec.freeze_prototype);
+        // Tauri добавляет в script-src хеши inline-скриптов, только если
+        // ему разрешено менять CSP; inline-скриптов в ui/ и так нет.
+        assert!(matches!(
+            sec.dangerous_disable_asset_csp_modification,
+            tauri::utils::config::DisabledCspModificationKind::Flag(false)
+        ));
+        for page in [include_str!("../../ui/settings.html"), include_str!("../../ui/island.html")] {
+            assert!(!page.contains("<script>"), "inline-скрипт в ui/*.html");
+            assert!(!page.contains(" style="), "атрибут style в ui/*.html");
+        }
+    }
+
+    /// Статические библиотеки sherpa-onnx (с ONNX Runtime) входят в каждый
+    /// бинарник, а релиз, откуда их берёт сборка, можно перезаписать. CI и
+    /// release.yml сверяют архив с sherpa-onnx.sha256: сменилась версия
+    /// sherpa-onnx-sys в Cargo.lock — нужны и новые суммы.
+    #[test]
+    fn sherpa_onnx_archives_are_pinned() {
+        let lock = include_str!("../Cargo.lock");
+        let key = "name = \"sherpa-onnx-sys\"\nversion = \"";
+        let rest = &lock[lock.find(key).expect("sherpa-onnx-sys в Cargo.lock") + key.len()..];
+        let version = &rest[..rest.find('"').expect("версия")];
+        let pins = include_str!("../sherpa-onnx.sha256");
+        for platform in ["osx-arm64-static-lib", "win-x64-static-MT-Release-lib"] {
+            let name = format!("sherpa-onnx-v{version}-{platform}.tar.bz2");
+            let line = pins
+                .lines()
+                .find(|l| !l.starts_with('#') && l.ends_with(&format!("  {name}")))
+                .unwrap_or_else(|| panic!("нет SHA-256 для {name} в sherpa-onnx.sha256"));
+            let hash = line.split("  ").next().unwrap_or_default();
+            assert!(
+                hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_url_allowlist() {
+        use super::url::allowed;
+        for ok in [
+            "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models",
+            "https://huggingface.co/nvidia/parakeet-tdt_ctc-110m",
+            "https://platform.openai.com/api-keys",
+            "https://console.groq.com/keys",
+            "https://elevenlabs.io/app/settings/api-keys",
+            "https://GitHub.com/DIZRAID/voxy?tab=readme#install",
+        ] {
+            assert!(allowed(ok), "{ok}");
+        }
+        for bad in [
+            "http://github.com/",
+            "https://evil.com/",
+            "https://github.com.evil.com/",
+            "https://github.com@evil.com/",
+            "https://evil.com\\@github.com/",
+            "https://github.com:443/",
+            "https://github.com./",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "https://",
+            "https://github.com/a b",
+            "https://github.com/a,b",
+            "https://github.com/\"x",
+            "https://github.com/\nx",
+            "https://github.com/\u{200B}",
+        ] {
+            assert!(!allowed(bad), "{bad}");
+        }
+        assert!(!allowed(&format!("https://github.com/{}", "a".repeat(2100))));
     }
 }

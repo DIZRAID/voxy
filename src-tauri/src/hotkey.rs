@@ -12,10 +12,10 @@
 //!   4. Колбэк тапа не берёт никаких «чужих» локов: только атомики
 //!      и отправка в unbounded-канал.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::asr::{self, ModelStatus};
@@ -41,8 +41,67 @@ pub enum Ctrl {
 const DYNAMIC_HOLD_MS: u128 = 1000;
 
 pub struct HotkeyHandles {
-    pub capture: Arc<AtomicBool>,
+    pub capture: Arc<Capture>,
     pub ctrl_tx: Sender<Ctrl>,
+}
+
+/// Сколько ждать клавишу после «Change» в настройках (столько же ждёт
+/// страница, CAPTURE_MS в settings.js).
+pub const CAPTURE_WINDOW: Duration = Duration::from_secs(15);
+
+/// Захват новой горячей клавиши. Следующее нажатие в системе становится
+/// хоткеем, поэтому захват ограничен: он истекает через CAPTURE_WINDOW и
+/// срабатывает, только пока окно настроек в фокусе. Иначе скрипт в окне мог
+/// бы снова и снова включать захват и так записывать нажатия в других
+/// приложениях. Только атомики: состояние читает колбэк тапа.
+pub struct Capture {
+    epoch: Instant,
+    /// До какого момента (мс от epoch) ждём клавишу; 0 — захвата нет.
+    until_ms: AtomicU64,
+    /// Окно настроек в фокусе (WindowEvent::Focused, см. show_settings).
+    settings_focused: AtomicBool,
+}
+
+impl Capture {
+    fn new() -> Self {
+        Self {
+            epoch: Instant::now(),
+            until_ms: AtomicU64::new(0),
+            settings_focused: AtomicBool::new(false),
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+
+    pub fn begin(&self) {
+        let until = self.now_ms() + CAPTURE_WINDOW.as_millis() as u64;
+        self.until_ms.store(until, Ordering::Relaxed);
+    }
+
+    pub fn cancel(&self) {
+        self.until_ms.store(0, Ordering::Relaxed);
+    }
+
+    pub fn set_settings_focused(&self, focused: bool) {
+        self.settings_focused.store(focused, Ordering::Relaxed);
+    }
+
+    /// Для колбэка тапа, на каждое нажатие. None — захвата нет. Иначе
+    /// захват снимается, а Some(true) значит, что эта клавиша — новый
+    /// хоткей; Some(false) — захват истёк или окно настроек не в фокусе.
+    fn take(&self) -> Option<bool> {
+        if self.until_ms.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        match self.until_ms.swap(0, Ordering::Relaxed) {
+            0 => None,
+            until => Some(
+                self.now_ms() <= until && self.settings_focused.load(Ordering::Relaxed),
+            ),
+        }
+    }
 }
 
 /// Имена клавиш ↔ виртуальные коды macOS. Имена совместимы с прежним
@@ -160,7 +219,7 @@ pub fn spawn(
         })
     };
     let shared_key = Arc::new(AtomicU32::new(initial_code));
-    let capture = Arc::new(AtomicBool::new(false));
+    let capture = Arc::new(Capture::new());
     let (ctrl_tx, ctrl_rx) = channel::<Ctrl>();
 
     spawn_listener(
@@ -418,20 +477,22 @@ fn finish(
 
 /// Обработка одного нажатия/отпускания. Вызывается из колбэка тапа —
 /// никаких локов, только атомики и канал.
-fn on_press(
-    code: u32,
-    shared_key: &AtomicU32,
-    capture: &AtomicBool,
-    ctrl_tx: &Sender<Ctrl>,
-) {
-    if capture.load(Ordering::Relaxed) {
-        capture.store(false, Ordering::Relaxed);
-        if code == ESCAPE_CODE {
-            let _ = ctrl_tx.send(Ctrl::CaptureCancelled);
-        } else {
-            let _ = ctrl_tx.send(Ctrl::SetHotkey(code));
+fn on_press(code: u32, shared_key: &AtomicU32, capture: &Capture, ctrl_tx: &Sender<Ctrl>) {
+    match capture.take() {
+        Some(true) => {
+            if code == ESCAPE_CODE {
+                let _ = ctrl_tx.send(Ctrl::CaptureCancelled);
+            } else {
+                let _ = ctrl_tx.send(Ctrl::SetHotkey(code));
+            }
+            return;
         }
-        return;
+        // Захват истёк или окно настроек не в фокусе: страница узнаёт об
+        // отмене, а клавиша обрабатывается как обычно.
+        Some(false) => {
+            let _ = ctrl_tx.send(Ctrl::CaptureCancelled);
+        }
+        None => {}
     }
     if code == shared_key.load(Ordering::Relaxed) {
         let _ = ctrl_tx.send(Ctrl::Pressed);
@@ -448,7 +509,7 @@ fn on_release(code: u32, shared_key: &AtomicU32, ctrl_tx: &Sender<Ctrl>) {
 fn spawn_listener(
     app: AppHandle,
     shared_key: Arc<AtomicU32>,
-    capture: Arc<AtomicBool>,
+    capture: Arc<Capture>,
     ctrl_tx: Sender<Ctrl>,
 ) {
     use core_foundation::base::TCFType;
@@ -457,7 +518,6 @@ fn spawn_listener(
         CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
         CallbackResult, EventField,
     };
-    use std::time::Duration;
 
     std::thread::spawn(move || {
         // Системные диалоги Accessibility + Input Monitoring: регистрируют
@@ -616,7 +676,6 @@ fn modifier_mask(code: u32) -> Option<u64> {
 /// в атомарной маске. Возвращает true, если клавиша теперь нажата.
 #[cfg(target_os = "macos")]
 fn toggle_unknown_modifier(code: u32) -> bool {
-    use std::sync::atomic::AtomicU64;
     static DOWN: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
     let bit = 1u64 << (code % 64);
     let prev = DOWN[((code / 64) as usize).min(1)].fetch_xor(bit, Ordering::Relaxed);
@@ -630,10 +689,9 @@ fn toggle_unknown_modifier(code: u32) -> bool {
 fn spawn_listener(
     _app: AppHandle,
     shared_key: Arc<AtomicU32>,
-    capture: Arc<AtomicBool>,
+    capture: Arc<Capture>,
     ctrl_tx: Sender<Ctrl>,
 ) {
-    use std::sync::atomic::AtomicU64;
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -643,7 +701,7 @@ fn spawn_listener(
 
     struct HookCtx {
         shared_key: Arc<AtomicU32>,
-        capture: Arc<AtomicBool>,
+        capture: Arc<Capture>,
         ctrl_tx: Sender<Ctrl>,
         /// Зажатые клавиши (VK < 256) атомарной маской: WM_KEYDOWN
         /// автоповторяется, press шлём один раз. Без локов в колбэке хука.
@@ -709,8 +767,68 @@ fn spawn_listener(
 fn spawn_listener(
     _app: AppHandle,
     _shared_key: Arc<AtomicU32>,
-    _capture: Arc<AtomicBool>,
+    _capture: Arc<Capture>,
     _ctrl_tx: Sender<Ctrl>,
 ) {
     log::warn!("глобальный хоткей не реализован для этой платформы");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Часы захвата, сдвинутые на минуту назад: now_ms() ≈ 60 000.
+    fn capture() -> Capture {
+        let mut c = Capture::new();
+        c.epoch = Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .expect("uptime > 60 s");
+        c
+    }
+
+    fn press(capture: &Capture, code: u32) -> Vec<&'static str> {
+        let (tx, rx) = channel();
+        on_press(code, &AtomicU32::new(0x36), capture, &tx);
+        drop(tx);
+        rx.iter()
+            .map(|m| match m {
+                Ctrl::Pressed => "pressed",
+                Ctrl::SetHotkey(_) => "set",
+                Ctrl::CaptureCancelled => "cancelled",
+                _ => "other",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn capture_takes_one_key_while_settings_focused() {
+        let c = capture();
+        c.set_settings_focused(true);
+        assert_eq!(press(&c, 0x3E), Vec::<&str>::new()); // захвата нет
+        c.begin();
+        assert_eq!(press(&c, 0x3E), ["set"]);
+        // захват одноразовый: следующая клавиша — обычное нажатие
+        assert_eq!(press(&c, 0x36), ["pressed"]);
+        c.begin();
+        assert_eq!(press(&c, ESCAPE_CODE), ["cancelled"]);
+        c.begin();
+        c.cancel();
+        assert_eq!(press(&c, 0x3E), Vec::<&str>::new());
+    }
+
+    /// Нажатия в других приложениях и после срока не становятся хоткеем.
+    #[test]
+    fn capture_rejects_unfocused_and_expired() {
+        let c = capture();
+        c.begin();
+        assert_eq!(press(&c, 0x00), ["cancelled"]); // окно не в фокусе
+        assert_eq!(press(&c, 0x00), Vec::<&str>::new()); // и захват снят
+
+        c.set_settings_focused(true);
+        c.until_ms.store(c.now_ms() - 1, Ordering::Relaxed); // срок вышел
+        assert_eq!(press(&c, 0x36), ["cancelled", "pressed"]);
+        c.begin();
+        c.set_settings_focused(false);
+        assert_eq!(press(&c, 0x00), ["cancelled"]);
+    }
 }

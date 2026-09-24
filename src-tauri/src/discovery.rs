@@ -99,6 +99,7 @@ fn fetch_new_models() -> Result<Vec<Found>> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
+        .https_only(true)
         .build();
     let body = agent
         .get(RELEASE_API)

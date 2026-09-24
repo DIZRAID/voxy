@@ -210,3 +210,71 @@ pub fn inference_threads() -> i32 {
         .map(|n| (n.get() / 2).clamp(1, 4) as i32)
         .unwrap_or(2)
 }
+
+/// Поколение буфера обмена (NSPasteboard.changeCount): растёт при каждой
+/// новой записи в буфер, кто бы её ни сделал. None — платформа не сообщает
+/// (Windows: пока не реализовано).
+#[cfg(target_os = "macos")]
+pub fn clipboard_generation() -> Option<isize> {
+    // Вызывается с рабочего потока: без пула автоосвобождения временные
+    // объекты AppKit на нём бы копились.
+    objc2::rc::autoreleasepool(|_| {
+        Some(objc2_app_kit::NSPasteboard::generalPasteboard().changeCount())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn clipboard_generation() -> Option<isize> {
+    None
+}
+
+/// В буфере секрет: менеджер паролей пометил содержимое как скрытое или
+/// временное (org.nspasteboard.ConcealedType / TransientType, стандарт
+/// nspasteboard.org). Такое содержимое Voxy после вставки не возвращает:
+/// вернулось бы уже без пометки, и его записала бы история буфера обмена.
+#[cfg(target_os = "macos")]
+pub fn clipboard_holds_secret() -> bool {
+    objc2::rc::autoreleasepool(|_| {
+        pasteboard_holds_secret(&objc2_app_kit::NSPasteboard::generalPasteboard())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn pasteboard_holds_secret(pasteboard: &objc2_app_kit::NSPasteboard) -> bool {
+    const MARKERS: [&str; 2] = ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"];
+    pasteboard.types().is_some_and(|types| {
+        types.to_vec().iter().any(|t| MARKERS.contains(&t.to_string().as_str()))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn clipboard_holds_secret() -> bool {
+    false
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    /// На отдельном буфере с уникальным именем: общий буфер обмена
+    /// пользователя тест не трогает.
+    #[test]
+    fn concealed_and_transient_clipboard_content_is_a_secret() {
+        use objc2_app_kit::NSPasteboard;
+        use objc2_foundation::NSString;
+        let text = NSString::from_str("public.utf8-plain-text");
+        let pb = NSPasteboard::pasteboardWithUniqueName();
+        pb.clearContents();
+        pb.setString_forType(&NSString::from_str("hello"), &text);
+        assert!(!super::pasteboard_holds_secret(&pb));
+        for marker in ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"] {
+            pb.clearContents();
+            pb.setString_forType(&NSString::from_str("s3cret"), &text);
+            pb.setString_forType(&NSString::from_str(""), &NSString::from_str(marker));
+            assert!(super::pasteboard_holds_secret(&pb), "{marker}");
+        }
+        // SAFETY: releaseGlobally — метод NSPasteboard без аргументов и
+        // результата; буфер больше не используется.
+        unsafe {
+            let _: () = objc2::msg_send![&*pb, releaseGlobally];
+        }
+    }
+}

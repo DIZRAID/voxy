@@ -12,7 +12,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash -s -- --uninstall --keep-data
 #
 # An install or update:
-#   1. finds the latest release through the GitHub API and downloads its Apple
+#   1. finds the latest release through the GitHub API (its tag must look like
+#      v1.2.3) and downloads its Apple
 #      Silicon app (the asset whose name ends in aarch64.app.tar.gz), checks its
 #      SHA-256 when GitHub lists one, and checks that it holds Voxy.app with
 #      bundle identifier com.dizraid.voice, a valid code signature and, under
@@ -92,7 +93,7 @@ REPO="DIZRAID/voxy"
 BUNDLE_ID="com.dizraid.voice"
 APP_NAME="Voxy.app"
 INSTALL_CMD="curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash"
-# tauri-action packs Voxy.app (at the archive root) and uploads it as
+# The release workflow packs Voxy.app (at the archive root) and uploads it as
 # Voxy_<version>_aarch64.app.tar.gz. The API lookup matches on this suffix only.
 ASSET_SUFFIX="aarch64.app.tar.gz"
 MIN_MACOS="14.0"
@@ -506,6 +507,19 @@ fetch_latest_json() {
     "https://api.github.com/repos/$REPO/releases/latest") || API_CODE="000"
 }
 
+# Releases are made only from tags like v1.2.3 (the release workflow refuses
+# anything else, and a tag ruleset guards them), so a latest release with any
+# other tag was not made by it: stop instead of installing it. This also keeps
+# odd characters out of the URLs built from the tag below.
+check_release_tag() {
+  local re='^v[0-9]+\.[0-9]+\.[0-9]+$' shown
+  if [[ ${RELEASE_TAG:-} =~ $re ]]; then
+    return 0
+  fi
+  shown=$(printf '%s' "${RELEASE_TAG:-}" | LC_ALL=C tr -cd 'A-Za-z0-9._-' | cut -c1-40)
+  die "The latest release has an unexpected tag (${shown:-none}), so the Voxy release workflow did not make it. Not installing it. See https://github.com/$REPO/releases"
+}
+
 download_release() {
   ARCHIVE="$TMP_DIR/Voxy.app.tar.gz"
   if [ -n "${VOXY_ARCHIVE:-}" ]; then
@@ -539,6 +553,7 @@ download_release() {
     200)
       local urls api_urls digests idx n
       RELEASE_TAG=$(json_values tag_name "$json" | sed -n 1p)
+      check_release_tag
       urls=$(json_values browser_download_url "$json")
       idx=$(printf '%s\n' "$urls" | awk -v s="$ASSET_SUFFIX" \
         'length($0) >= length(s) && substr($0, length($0) - length(s) + 1) == s { print NR; exit }')
@@ -567,7 +582,10 @@ download_release() {
       location=$(curl -sS "${CURL_COMMON[@]}" --max-time 60 -o /dev/null -w '%{redirect_url}' \
         "https://github.com/$REPO/releases/latest") || location=""
       case "$location" in
-        */releases/tag/?*) RELEASE_TAG=${location##*/releases/tag/} ;;
+        */releases/tag/?*)
+          RELEASE_TAG=${location##*/releases/tag/}
+          check_release_tag
+          ;;
         *)
           if [ "$USE_TOKEN" = "1" ]; then
             die "The GitHub API refused the request (HTTP $code) although GITHUB_TOKEN is set, and the latest release could not be found without the API. Check the token, or unset it and try again."
@@ -584,7 +602,7 @@ download_release() {
       if [ -n "$href" ]; then
         url="https://github.com$href"
       else
-        # The name tauri-action v1 gives the asset.
+        # The name the release workflow gives the asset.
         url="https://github.com/$REPO/releases/download/$RELEASE_TAG/Voxy_${RELEASE_TAG#v}_$ASSET_SUFFIX"
       fi
       if [ "$USE_TOKEN" = "1" ]; then

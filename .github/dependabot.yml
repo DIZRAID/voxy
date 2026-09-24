@@ -1,0 +1,30 @@
+# Dependabot version updates. Security alerts are enabled in the repository
+# settings; these PRs keep dependencies and the SHA-pinned GitHub Actions
+# current. Few open PRs at a time: each one runs CI on macOS and Windows.
+#
+# Note for sherpa-onnx-sys bumps: the static libraries it links are pinned by
+# SHA-256 in src-tauri/sherpa-onnx.sha256, so such a PR fails CI until the new
+# hashes are added there (see the comment in that file).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      # One PR for the Tauri crates, which are released together.
+      tauri:
+        patterns:
+          - "tauri"
+          - "tauri-*"
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"

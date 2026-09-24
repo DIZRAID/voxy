@@ -211,8 +211,9 @@ function createMenu({ anchor, trigger, width, head, up, label, getItems, onPick 
       id: uid,
       tabindex: "-1",
       "aria-label": label,
-      style: `width:${width}px`,
     });
+    // через CSSOM: атрибут style запрещён CSP окна (style-src 'self')
+    menu.style.width = `${width}px`;
     if (head) menu.append(h("div", { class: "menu-head", role: "presentation" }, head));
     els = items.map((it, i) => {
       const el = h(
@@ -284,13 +285,22 @@ function renderHotkey() {
 }
 
 // Захват идёт через глобальный тап в Rust: следующая нажатая клавиша
-// сохраняется там же и приходит событием hotkey-captured.
+// сохраняется там же и приходит событием hotkey-captured. Rust принимает
+// клавишу только CAPTURE_MS и только пока окно в фокусе (hotkey::Capture),
+// поэтому страница тоже снимает захват по таймеру и при потере фокуса.
+const CAPTURE_MS = 15000;
+let captureTimer = null;
 function beginCapture() {
   capturing = true;
   renderHotkey();
+  clearTimeout(captureTimer);
+  captureTimer = setTimeout(() => {
+    if (capturing) cancelCapture();
+  }, CAPTURE_MS);
   invoke("begin_hotkey_capture").catch(logErr);
 }
 function cancelCapture() {
+  clearTimeout(captureTimer);
   capturing = false;
   renderHotkey();
   invoke("cancel_hotkey_capture").catch(logErr);
@@ -309,6 +319,7 @@ $("hk-btn").addEventListener("click", () => {
 
 listen("hotkey-captured", (e) => {
   const p = e.payload || {};
+  clearTimeout(captureTimer);
   capturing = false;
   if (!p.cancelled && p.key && settings) settings.hotkey = p.key;
   renderHotkey();
@@ -1425,7 +1436,11 @@ document.addEventListener(
   },
   true
 );
-window.addEventListener("blur", () => closeMenu(false));
+window.addEventListener("blur", () => {
+  closeMenu(false);
+  // клавиши в других приложениях хоткеем не становятся (Rust их и не примет)
+  if (capturing) cancelCapture();
+});
 // Страница уходит с включённым захватом — снимаем флаг, иначе следующая
 // клавиша в любом приложении стала бы хоткеем (Rust страхует то же при
 // уничтожении окна).

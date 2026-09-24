@@ -120,10 +120,42 @@ pub fn delete_key(provider_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Ключ из поля ввода: без пробелов по краям и только печатный ASCII.
+/// Невидимые символы (U+200B, U+FEFF), неразрывный пробел внутри ключа и
+/// перенос строки, ставший пробелом, отвергаются до любого запроса: ни у
+/// одного провайдера таких символов в ключе нет, а ureq вернул бы ошибку
+/// BadHeader, текст которой содержит весь заголовок вместе с ключом.
+pub fn clean_key(raw: &str) -> Result<&str, String> {
+    let key = raw.trim();
+    if key.is_empty() {
+        return Err("Paste an API key".into());
+    }
+    if key.len() > 1024 || !key.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(
+            "The key contains spaces or invisible characters. Copy it again from the provider's page"
+                .into(),
+        );
+    }
+    Ok(key)
+}
+
+/// Ошибка запроса для лога — без текста самой ошибки: у BadHeader он
+/// содержит заголовок целиком (Authorization / xi-api-key с ключом).
+/// Причина (сеть, TLS) берётся из source(), в котором заголовков нет.
+fn describe(e: &ureq::Error) -> String {
+    use std::error::Error as _;
+    match e.source() {
+        Some(cause) => format!("{}: {cause}", e.kind()),
+        None => e.kind().to_string(),
+    }
+}
+
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout(Duration::from_secs(120))
+        // Никаких перенаправлений на http://.
+        .https_only(true)
         .build()
 }
 
@@ -142,7 +174,7 @@ pub fn verify_key(p: &Provider, key: &str) -> Result<()> {
         Err(ureq::Error::Status(401 | 403, _)) => bail!("{} rejected this API key", p.name),
         Err(ureq::Error::Status(code, _)) => bail!("{}: server error {code}", p.name),
         Err(e) => {
-            log::warn!("проверка ключа {}: {e}", p.name);
+            log::warn!("проверка ключа {}: {}", p.name, describe(&e));
             bail!("No connection to {}", p.name)
         }
     }
@@ -195,12 +227,12 @@ impl OnlineEngine {
             Err(ureq::Error::Status(401 | 403, _)) => bail!("{}: invalid API key", p.name),
             Err(ureq::Error::Status(429, _)) => bail!("{}: rate limit or no credits", p.name),
             Err(ureq::Error::Status(code, r)) => {
-                let detail = r.into_string().unwrap_or_default();
+                let detail: String = r.into_string().unwrap_or_default().chars().take(500).collect();
                 log::error!("{} HTTP {code}: {detail}", p.name);
                 bail!("{}: server error {code}", p.name)
             }
             Err(e) => {
-                log::error!("{}: {e}", p.name);
+                log::error!("{}: {}", p.name, describe(&e));
                 bail!("No connection to {}", p.name)
             }
         };
@@ -293,6 +325,39 @@ mod tests {
         assert_eq!(wav.len(), 44 + data_len);
         // ~1 c при 16 кГц, 16 бит (ресемплер может дать ±несколько сэмплов)
         assert!((data_len as i64 / 2 - 16_000).abs() < 64, "{data_len}");
+    }
+
+    #[test]
+    fn keys_with_invisible_characters_are_rejected() {
+        assert_eq!(clean_key("  sk-proj-AbC_123-xyz \n"), Ok("sk-proj-AbC_123-xyz"));
+        assert_eq!(clean_key(" \t "), Err("Paste an API key".into()));
+        for bad in [
+            "sk-proj-abc\u{200B}",  // zero-width space: trim() его не убирает
+            "\u{FEFF}sk-proj-abc",  // BOM
+            "sk-proj-abc def",     // перенос строки, ставший пробелом
+            "sk-proj-abc\u{00A0}def",
+            "sk-proj-abc\ndef",
+            "sk-проект",
+        ] {
+            assert!(clean_key(bad).is_err(), "{bad:?}");
+        }
+        assert!(clean_key(&"k".repeat(1025)).is_err());
+    }
+
+    /// Ошибка заголовка у ureq содержит весь заголовок с ключом; в лог
+    /// уходит только её вид. Без сети: заголовок проверяется до соединения
+    /// (а 127.0.0.1:9 и так никуда не ведёт).
+    #[test]
+    fn logged_errors_never_contain_the_key() {
+        let secret = "sk-proj-SECRETKEY";
+        let err = agent()
+            .get("https://127.0.0.1:9/")
+            .set("xi-api-key", &format!("{secret}\u{200B}"))
+            .call()
+            .unwrap_err();
+        assert!(err.to_string().contains(secret), "ureq больше не печатает заголовок?");
+        let logged = describe(&err);
+        assert!(!logged.contains(secret), "{logged}");
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub const HISTORY_LIMIT: usize = 50;
@@ -119,10 +120,17 @@ pub fn data_dir(app: &AppHandle) -> PathBuf {
 /// Атомарная запись: сначала во временный файл, потом rename. Сбой или
 /// выключение посреди записи не оставит обрезанный JSON, который при
 /// следующем запуске молча превратился бы в настройки по умолчанию.
-fn write_atomic(path: &PathBuf, contents: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, contents)?;
-    fs::rename(&tmp, path)
+/// Имя временного файла своё у каждой записи: две записи из разных потоков
+/// не пишут в один и тот же .tmp.
+fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}-{seq}.tmp", std::process::id()));
+    let result = fs::write(&tmp, contents).and_then(|()| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 fn settings_path(app: &AppHandle) -> PathBuf {
@@ -148,11 +156,30 @@ pub fn save_settings(app: &AppHandle, settings: &Settings) {
     }
 }
 
-pub fn load_history(app: &AppHandle) -> Vec<HistoryEntry> {
+/// Все чтения-изменения-записи history.json идут под этим локом: иначе
+/// очистка истории, пришедшая между чтением и записью в push_history,
+/// была бы молча отменена (вернулись бы старые записи).
+fn history_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn read_history_file(app: &AppHandle) -> Vec<HistoryEntry> {
     fs::read_to_string(history_path(app))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
+}
+
+/// История для показа. Записи старше срока хранения не возвращаются и
+/// удаляются с диска.
+pub fn load_history(app: &AppHandle, keep: &str) -> Vec<HistoryEntry> {
+    let _guard = history_lock();
+    let mut history = read_history_file(app);
+    if apply_retention(&mut history, keep) {
+        save_history(app, &history);
+    }
+    history
 }
 
 fn save_history(app: &AppHandle, history: &[HistoryEntry]) {
@@ -164,37 +191,95 @@ fn save_history(app: &AppHandle, history: &[HistoryEntry]) {
 }
 
 pub fn push_history(app: &AppHandle, entry: HistoryEntry, keep: &str) {
-    let mut history = load_history(app);
-    history.insert(0, entry);
-    history.truncate(HISTORY_LIMIT);
-    apply_retention(&mut history, keep);
-    save_history(app, &history);
+    {
+        let _guard = history_lock();
+        let mut history = read_history_file(app);
+        history.insert(0, entry);
+        history.truncate(HISTORY_LIMIT);
+        apply_retention(&mut history, keep);
+        save_history(app, &history);
+    }
     let _ = app.emit_to("settings", "history-updated", ());
 }
 
-/// Удаляет записи старше срока хранения. Вызывается при запуске,
-/// при смене срока и при каждом добавлении.
+/// Удаляет записи старше срока хранения. Вызывается при запуске, при
+/// смене срока, раз в час (lib.rs) и при каждом добавлении и чтении.
 pub fn prune_history(app: &AppHandle, keep: &str) {
-    let mut history = load_history(app);
-    let before = history.len();
-    apply_retention(&mut history, keep);
-    if history.len() != before {
-        save_history(app, &history);
+    let changed = {
+        let _guard = history_lock();
+        let mut history = read_history_file(app);
+        let changed = apply_retention(&mut history, keep);
+        if changed {
+            save_history(app, &history);
+        }
+        changed
+    };
+    if changed {
         let _ = app.emit_to("settings", "history-updated", ());
     }
 }
 
-fn apply_retention(history: &mut Vec<HistoryEntry>, keep: &str) {
+/// Убирает записи старше срока; true, если что-то убрано.
+fn apply_retention(history: &mut Vec<HistoryEntry>, keep: &str) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    retain_recent(history, keep, now)
+}
+
+fn retain_recent(history: &mut Vec<HistoryEntry>, keep: &str, now_ms: u64) -> bool {
+    let before = history.len();
     if let Some(ttl) = retention_ms(keep) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        history.retain(|e| now.saturating_sub(e.ts_ms) < ttl);
+        history.retain(|e| now_ms.saturating_sub(e.ts_ms) < ttl);
     }
+    history.len() != before
 }
 
 pub fn clear_history(app: &AppHandle) {
-    save_history(app, &[]);
+    {
+        let _guard = history_lock();
+        save_history(app, &[]);
+    }
     let _ = app.emit_to("settings", "history-updated", ());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retention_drops_only_expired_entries() {
+        let hour = 3600 * 1000;
+        let now = 1_000 * hour;
+        let entry = |ago: u64| HistoryEntry { text: String::new(), ts_ms: now - ago, duration_ms: 0 };
+        let mut h = vec![entry(hour), entry(23 * hour), entry(25 * hour), entry(9 * 24 * hour)];
+        assert!(!retain_recent(&mut h.clone(), "forever", now));
+        assert!(retain_recent(&mut h, "24h", now));
+        assert_eq!(h.len(), 2);
+        assert!(!retain_recent(&mut h, "24h", now));
+    }
+
+    #[test]
+    fn atomic_writes_use_distinct_temp_files() {
+        let dir = std::env::temp_dir().join(format!("voxy-store-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        std::thread::scope(|s| {
+            for i in 0..8 {
+                let path = &path;
+                s.spawn(move || {
+                    for _ in 0..50 {
+                        write_atomic(path, &format!("[{i}]")).unwrap();
+                    }
+                });
+            }
+        });
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with('[') && text.ends_with(']'), "{text}");
+        // временных файлов не осталось
+        let left: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, [std::ffi::OsString::from("history.json")]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

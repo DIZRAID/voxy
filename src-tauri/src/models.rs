@@ -244,6 +244,8 @@ fn agent() -> ureq::Agent {
         // таймаут на одно чтение из сокета, а не на всё скачивание:
         // гигабайтная модель на медленном канале качается долго
         .timeout_read(Duration::from_secs(60))
+        // Hugging Face и GitHub перенаправляют на свои CDN только по https.
+        .https_only(true)
         .build()
 }
 
@@ -312,6 +314,8 @@ pub fn install_into(
 
 /// Скачивание с докачкой: если .part уже частично есть — Range-запрос.
 /// Сервер, не поддержавший Range (200 вместо 206), качает заново.
+/// Больше `expected` байт не пишется: сервер (или CDN), присылающий лишнее,
+/// не заполнит диск до проверки SHA-256.
 fn fetch(
     url: &str,
     part: &Path,
@@ -325,12 +329,33 @@ fn fetch(
     }
     let have = if expected > 0 && have > expected { 0 } else { have };
 
-    let mut req = agent().get(url);
+    // identity: без сжатия, чтобы Content-Length был размером самого файла
+    // (сжатый ответ ureq распаковал бы сам).
+    let mut req = agent().get(url).set("Accept-Encoding", "identity");
     if have > 0 {
         req = req.set("Range", &format!("bytes={have}-"));
     }
-    let resp = req.call().with_context(|| format!("запрос {url}"))?;
+    let resp = match req.call() {
+        // Докачивать нечего или нечем: .part не подходит к файлу на сервере.
+        // Удаляем, чтобы следующая попытка начала сначала.
+        Err(ureq::Error::Status(416, _)) => {
+            let _ = fs::remove_file(part);
+            bail!("сервер отверг докачку (HTTP 416), скачайте заново");
+        }
+        r => r.with_context(|| format!("запрос {url}"))?,
+    };
     let resumed = have > 0 && resp.status() == 206;
+    if expected > 0 {
+        let remaining = if resumed { expected - have } else { expected };
+        let encoded = resp
+            .header("Content-Encoding")
+            .is_some_and(|e| !e.eq_ignore_ascii_case("identity"));
+        if let Some(len) = resp.header("Content-Length").and_then(|v| v.trim().parse::<u64>().ok()) {
+            if !encoded && len != remaining {
+                bail!("сервер отдаёт {len} байт вместо {remaining}");
+            }
+        }
+    }
 
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -350,6 +375,11 @@ fn fetch(
         let n = reader.read(&mut buf)?;
         if n == 0 {
             break;
+        }
+        if expected > 0 && written + n as u64 > expected {
+            drop(file);
+            let _ = fs::remove_file(part);
+            bail!("сервер прислал больше {expected} байт");
         }
         file.write_all(&buf[..n])?;
         written += n as u64;

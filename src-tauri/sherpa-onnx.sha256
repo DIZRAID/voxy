@@ -1,0 +1,17 @@
+# SHA-256 of the sherpa-onnx static libraries (sherpa-onnx, ONNX Runtime,
+# espeak-ng, ...) that are linked into every Voxy build. They come from
+# https://github.com/k2-fsa/sherpa-onnx/releases/download/v<version>/<name>,
+# a release whose assets can be replaced, so .github/workflows/ci.yml and
+# release.yml download the archive themselves, check it against this file and
+# point the sherpa-onnx-sys build script at the checked copy
+# (SHERPA_ONNX_LIB_DIR), so the build script downloads nothing.
+#
+# When Cargo.lock moves to another sherpa-onnx-sys version, CI fails until the
+# lines for that version are here (unit test sherpa_onnx_archives_are_pinned).
+# Take the new values from the GitHub API and from a local download:
+#   gh api repos/k2-fsa/sherpa-onnx/releases/tags/v<version> \
+#     --jq '.assets[] | select(.name | test("osx-arm64-static-lib|win-x64-static-MT-Release-lib")) | "\(.digest) \(.name)"'
+#   shasum -a 256 sherpa-onnx-v<version>-osx-arm64-static-lib.tar.bz2
+# Format: "<sha256>  <file name>", as sha256sum -c expects.
+9091bf160dc7fdacedbc906b212badf53c2993f4e5277a0e03998e96c31d60da  sherpa-onnx-v1.13.8-osx-arm64-static-lib.tar.bz2
+56ffcf3c454c1f14f7bc9887286cc8143e7e542dc632804e1c447d5f8d534eaf  sherpa-onnx-v1.13.8-win-x64-static-MT-Release-lib.tar.bz2

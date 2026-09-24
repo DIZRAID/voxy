@@ -1,0 +1,32 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "Окно настроек: события, версия, перетаскивание за верхнюю полосу (data-tauri-drag-region) и команды приложения, кроме команд островка",
+  "windows": ["settings"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:app:allow-version",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "allow-get-settings",
+    "allow-set-settings",
+    "allow-list-mics",
+    "allow-get-history",
+    "allow-clear-history",
+    "allow-copy-text",
+    "allow-get-model-status",
+    "allow-models-overview",
+    "allow-model-download",
+    "allow-model-cancel-download",
+    "allow-model-delete",
+    "allow-model-activate",
+    "allow-provider-save-key",
+    "allow-provider-delete-key",
+    "allow-begin-hotkey-capture",
+    "allow-cancel-hotkey-capture",
+    "allow-permissions-status",
+    "allow-open-permission-settings",
+    "allow-open-url"
+  ]
+}

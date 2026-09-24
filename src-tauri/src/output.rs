@@ -16,11 +16,17 @@ pub fn insert_text(text: &str) -> Result<()> {
     let mut clipboard = arboard::Clipboard::new().context("нет доступа к буферу обмена")?;
 
     // Не-текстовое содержимое (картинка) вернёт Err — тогда не восстанавливаем.
-    let saved = clipboard.get_text().ok();
+    // Секрет из менеджера паролей тоже не восстанавливаем (см.
+    // platform::clipboard_holds_secret): он пропадёт из буфера, как после
+    // обычной автоочистки менеджера.
+    let saved = if crate::platform::clipboard_holds_secret() {
+        None
+    } else {
+        clipboard.get_text().ok()
+    };
 
-    clipboard
-        .set_text(text.to_string())
-        .context("не удалось записать текст в буфер")?;
+    set_text_private(&mut clipboard, text).context("не удалось записать текст в буфер")?;
+    let generation = crate::platform::clipboard_generation();
 
     sleep(PASTE_DELAY);
 
@@ -30,9 +36,35 @@ pub fn insert_text(text: &str) -> Result<()> {
 
     sleep(RESTORE_DELAY);
     if let Some(saved) = saved {
-        let _ = clipboard.set_text(saved);
+        // Пока шла вставка, в буфер записал кто-то другой (пользователь
+        // что-то скопировал) — его содержимое не затираем.
+        if crate::platform::clipboard_generation() == generation {
+            let _ = set_text_private(&mut clipboard, &saved);
+        } else {
+            log::info!("буфер обмена изменился во время вставки, не восстанавливаю");
+        }
     }
     Ok(())
+}
+
+/// Запись в буфер с пометкой «не для истории буфера обмена»: ни
+/// продиктованный текст, ни возвращённое содержимое не должны появляться
+/// в Maccy/Raycast/Paste (macOS) или в журнале Win+V как новые записи.
+fn set_text_private(clipboard: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        use arboard::SetExtApple;
+        clipboard.set().exclude_from_history().text(text)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use arboard::SetExtWindows;
+        clipboard.set().exclude_from_history().text(text)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        clipboard.set_text(text)
+    }
 }
 
 fn send_paste() -> Result<()> {

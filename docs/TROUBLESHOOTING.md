@@ -15,7 +15,7 @@
 
 ## Logs
 
-Logs are written to `~/Library/Logs/Voxy.log` (on Windows, `%LOCALAPPDATA%\Voxy.log`). Set `VOXY_LOG_STDERR=1` to send them to stderr instead. `RUST_LOG` overrides the default `info` level. Log messages, model download errors shown in Settings → Model, and the `model_smoke` output are currently in Russian.
+Logs are written to `~/Library/Logs/Voxy.log` (on Windows, `%LOCALAPPDATA%\Voxy.log`). Set `VOXY_LOG_STDERR=1` to send them to stderr instead. `RUST_LOG` overrides the default `info` level, except for the HTTP client (`ureq`), which never logs below `warn` because its debug output contains request headers (API keys). Before you attach a log to a public issue, read it and remove anything private. Log messages, model download errors shown in Settings → Model, and the `model_smoke` output are currently in Russian.
 
 ## Messages on the island
 
@@ -92,10 +92,13 @@ If GitHub is still unreachable, download the archive yourself and set `SHERPA_ON
 mkdir -p "$HOME/sherpa-archives"
 curl -L -o "$HOME/sherpa-archives/sherpa-onnx-v1.13.8-osx-arm64-static-lib.tar.bz2" \
   https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-osx-arm64-static-lib.tar.bz2
+# The archive is linked into Voxy: check it against the pinned SHA-256 first.
+(cd "$HOME/sherpa-archives" && grep ' sherpa-onnx-v1.13.8-osx-arm64-static-lib.tar.bz2$' \
+  /path/to/voxy/src-tauri/sherpa-onnx.sha256 | shasum -a 256 -c -)
 SHERPA_ONNX_ARCHIVE_DIR="$HOME/sherpa-archives" cargo tauri build
 ```
 
-After the first successful download, the archive is cached in `src-tauri/target/sherpa-onnx-prebuilt/`.
+After the first successful download, the archive is cached in `src-tauri/target/sherpa-onnx-prebuilt/`. The crate's build script checks no hash; CI and release builds download the archive themselves and check it against [`src-tauri/sherpa-onnx.sha256`](../src-tauri/sherpa-onnx.sha256).
 
 Alternatively, set `SHERPA_ONNX_LIB_DIR` to the `lib` folder inside an extracted archive (for example `…/sherpa-onnx-v1.13.8-osx-arm64-static-lib/lib`, the folder that holds the `.a` files). It also needs an absolute path.
 

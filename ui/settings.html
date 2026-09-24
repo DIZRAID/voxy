@@ -3,16 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <title>Voxy</title>
-  <!-- Платформа и демо-режим — до стилей, чтобы не было вспышки: на macOS
-       окно прозрачное (нативное стекло), на Windows и в браузере — нет. -->
-  <script>
-    (function () {
-      var root = document.documentElement;
-      root.dataset.platform = navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "mac" : "win";
-      if (!window.__TAURI__) root.dataset.demo = "";
-      root.classList.add("booting");
-    })();
-  </script>
+  <!-- Платформа и демо-режим — до стилей, чтобы не было вспышки (boot.js). -->
+  <script src="boot.js"></script>
   <link rel="stylesheet" href="settings.css" />
 </head>
 <body>

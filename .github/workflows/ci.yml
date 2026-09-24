@@ -15,11 +15,13 @@ on:
       - "src-tauri/**"
       - "ui/**"
       - ".github/workflows/ci.yml"
+      - ".github/scripts/fetch-sherpa-onnx.sh"
   pull_request:
     paths:
       - "src-tauri/**"
       - "ui/**"
       - ".github/workflows/ci.yml"
+      - ".github/scripts/fetch-sherpa-onnx.sh"
   workflow_dispatch:
 
 permissions:
@@ -65,12 +67,18 @@ jobs:
       run:
         working-directory: src-tauri
 
+    # Third-party actions are pinned to full commit SHAs (Dependabot bumps
+    # them, see .github/dependabot.yml); a moved tag cannot change what runs.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-25
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
           # Only main writes the cache; PRs reuse it.
@@ -80,40 +88,18 @@ jobs:
           cache-on-failure: true
 
       # sherpa-onnx-sys normally downloads its static libraries into
-      # target/sherpa-onnx-prebuilt/. rust-cache deletes files there before
+      # target/sherpa-onnx-prebuilt/, without checking any hash. The script
+      # downloads them itself, checks the SHA-256 pinned in
+      # src-tauri/sherpa-onnx.sha256, and passes them on through
+      # SHERPA_ONNX_LIB_DIR, so the build script downloads nothing. That also
+      # keeps them outside target/: rust-cache deletes files there before
       # saving but keeps the build-script output that points at them, so the
-      # next cached run would fail to link. Put the libraries outside target/
-      # and pass them through SHERPA_ONNX_LIB_DIR, which the build script
-      # supports. Archive names follow archive_name() in sherpa-onnx-sys's
-      # build.rs (default "static" feature).
-      - name: Fetch sherpa-onnx static libraries
+      # next cached run would fail to link.
+      - name: Fetch and verify sherpa-onnx static libraries
         shell: bash
-        run: |
-          set -euo pipefail
-          version=$(awk -F'"' '/^name = "sherpa-onnx-sys"/ { getline; print $2; exit }' Cargo.lock)
-          if [ -z "$version" ]; then
-            echo "::error::sherpa-onnx-sys not found in src-tauri/Cargo.lock"
-            exit 1
-          fi
-          name="sherpa-onnx-v${version}-${{ matrix.sherpa_archive }}"
-          url="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${version}/${name}.tar.bz2"
-          echo "Downloading $url"
-          mkdir -p "$RUNNER_TEMP/sherpa-onnx"
-          cd "$RUNNER_TEMP/sherpa-onnx"
-          curl -fsSL --retry 3 -o archive.tar.bz2 "$url"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            # Windows' own bsdtar unpacks .tar.bz2 without an external bzip2.
-            /c/Windows/System32/tar.exe -xf archive.tar.bz2
-          else
-            tar -xf archive.tar.bz2
-          fi
-          rm archive.tar.bz2
-          ls -l "$name/lib"
-          libdir="$PWD/$name/lib"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            libdir=$(cygpath -w "$libdir")
-          fi
-          echo "SHERPA_ONNX_LIB_DIR=$libdir" >> "$GITHUB_ENV"
+        env:
+          SHERPA_ARCHIVE: ${{ matrix.sherpa_archive }}
+        run: bash ../.github/scripts/fetch-sherpa-onnx.sh "$SHERPA_ARCHIVE"
 
       - name: Build (debug)
         run: cargo build --locked

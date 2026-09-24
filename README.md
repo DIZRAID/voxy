@@ -214,6 +214,7 @@ Releases usually also include a Windows installer (`-setup.exe`) for testing (se
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): building from source, running and testing, previewing the UI without Tauri, adding a model, releases, project layout and stack.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): logs, island messages, hotkey and paste problems, model downloads, build issues, data locations and uninstalling.
 - [BUILD_WINDOWS.md](BUILD_WINDOWS.md): building and testing on Windows.
+- [SECURITY.md](SECURITY.md): reporting a vulnerability privately, and verifying a downloaded release.
 
 ## Acknowledgements
 
