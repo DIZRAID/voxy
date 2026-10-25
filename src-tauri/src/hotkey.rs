@@ -11,6 +11,36 @@
 //!      kCGEventTapDisabledByTimeout.
 //!   4. Колбэк тапа не берёт никаких «чужих» локов: только атомики
 //!      и отправка в unbounded-канал.
+//!
+//! Windows: низкоуровневый хук WH_KEYBOARD_LL на собственном потоке
+//! `voxy-hotkey-hook` с приоритетом THREAD_PRIORITY_HIGHEST. Разрешений не
+//! нужно. Те же принципы, что у тапа, плюс особенности Win32:
+//!   1. В любой момент стоит РОВНО ОДИН хук: переустановка всегда сначала
+//!      снимает старый хук, потом ставит новый. Два хука — каждое событие
+//!      приходит дважды, и Toggle переключался бы туда и обратно.
+//!   2. Колбэк (hook_proc) вызывается внутри GetMessageW потока хука, и ввод
+//!      во всей системе ждёт его возврата. Не уложился в LowLevelHooksTimeout
+//!      (сотни мс, с Windows 10 1709 не больше 1 с) — Windows МОЛЧА снимает
+//!      хук, узнать об этом нельзя. Поэтому в колбэке только атомики и
+//!      отправка в unbounded-канал: ни логов, ни локов, ни форматирования, ни
+//!      аллокаций сверх send. Вне колбэка поток тоже не делает ничего долгого
+//!      (пока он занят, клавиатура всей системы стоит): логи только на
+//!      редких путях — старт, ошибки, восстановление.
+//!   3. Собственный синтетический ввод Voxy (Ctrl+V от enigo в
+//!      output::send_paste, помечен dwExtraInfo = enigo::EVENT_MARKER)
+//!      игнорируется: иначе хоткей Left Ctrl запускал бы запись на каждой
+//!      вставке. Прочий injected-ввод (флаг LLKHF_INJECTED) НЕ фильтруется:
+//!      через него работают ремапы PowerToys и AutoHotkey.
+//!   4. Самолечение: раз в 60 с (SetTimer без окна кладёт WM_TIMER в очередь
+//!      потока) хук переустанавливается, если ни одна клавиша не зажата —
+//!      так не теряется отпускание. Плановая переустановка — единственный
+//!      способ, раз о снятии хука система не сообщает.
+//!
+//! Ограничения Windows для пользователя: тап клавиши Win открывает меню
+//! «Пуск» (listen-only хук его не подавит), а левый Alt активирует меню
+//! приложений, и его же синтетически нажимает tao, когда выводит окно на
+//! передний план (force_window_active). Поэтому настройки предупреждают про
+//! Win, а документация советует Right Ctrl или F-клавиши.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
@@ -505,6 +535,52 @@ fn on_release(code: u32, shared_key: &AtomicU32, ctrl_tx: &Sender<Ctrl>) {
     }
 }
 
+/// Решения хука Windows без вызовов ОС. Компилируются на всех платформах,
+/// чтобы юнит-тесты шли в CI и на macOS, и на Windows; вне Windows в
+/// обычной сборке не используются.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod win_hook {
+    use super::{AtomicU64, Ordering};
+
+    /// Метка, которой enigo помечает каждое своё синтетическое событие
+    /// (KBDLLHOOKSTRUCT.dwExtraInfo). output.rs создаёт Enigo с настройками
+    /// по умолчанию (windows_dw_extra_info = None), поэтому Ctrl+V от
+    /// вставки приходит именно с этой меткой.
+    const OWN_INPUT_MARKER: usize = enigo::EVENT_MARKER as usize;
+
+    /// Событие — собственный синтетический ввод Voxy? Такие события хук
+    /// пропускает мимо state machine. Прочий injected-ввод (LLKHF_INJECTED:
+    /// PowerToys, AutoHotkey, Alt-тап tao) обрабатывается как обычный.
+    pub(super) fn is_own_input(extra_info: usize) -> bool {
+        extra_info == OWN_INPUT_MARKER
+    }
+
+    /// Слово и бит виртуального кода в маске зажатых клавиш
+    /// (VK < 256: четыре слова по 64 бита).
+    pub(super) fn down_slot(vk: u32) -> (usize, u64) {
+        (((vk / 64) as usize).min(3), 1u64 << (vk % 64))
+    }
+
+    /// Ни одна клавиша не зажата: переустановка хука не потеряет отпускание.
+    pub(super) fn no_key_held(words: &[AtomicU64; 4]) -> bool {
+        words.iter().all(|w| w.load(Ordering::Relaxed) == 0)
+    }
+
+    /// Сколько тиков подряд плановая переустановка ждёт отпускания клавиш.
+    /// Отпускание, ушедшее на защищённый рабочий стол (Win+L, Ctrl+Alt+Del,
+    /// запрос UAC), хук не видит, и бит клавиши залипает до следующего её
+    /// нажатия; без предела залипший бит навсегда выключил бы самолечение.
+    /// 10 тиков (10 минут) — дольше самой длинной записи (300 с). А реально
+    /// зажатая клавиша переустановку переживает: её отпускание теряется,
+    /// только если попадёт в микросекундный зазор между снятием и установкой.
+    pub(super) const MAX_REHOOK_DEFERRALS: u32 = 10;
+
+    /// Пора ли переустановить хук на этом тике таймера.
+    pub(super) fn rehook_due(no_key_held: bool, deferred_ticks: u32) -> bool {
+        no_key_held || deferred_ticks >= MAX_REHOOK_DEFERRALS
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn spawn_listener(
     app: AppHandle,
@@ -682,9 +758,10 @@ fn toggle_unknown_modifier(code: u32) -> bool {
     prev & bit == 0
 }
 
-/// Windows: низкоуровневый клавиатурный хук WH_KEYBOARD_LL.
-/// Свойства, аналогичные macOS-варианту: один хук на процесс, колбэк
-/// делает только быстрые операции (атомики + канал), разрешений не нужно.
+/// Windows: низкоуровневый клавиатурный хук WH_KEYBOARD_LL на собственном
+/// потоке (инварианты — в документации модуля). Колбэк вызывается внутри
+/// GetMessageW этого потока; тот же цикл сообщений раз в минуту
+/// переустанавливает хук, если Windows молча его сняла.
 #[cfg(target_os = "windows")]
 fn spawn_listener(
     _app: AppHandle,
@@ -693,11 +770,25 @@ fn spawn_listener(
     ctrl_tx: Sender<Ctrl>,
 ) {
     use std::sync::OnceLock;
-    use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetMessageW, SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
-        WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    use windows_sys::Win32::Foundation::{
+        GetLastError, ERROR_INVALID_HOOK_HANDLE, HMODULE, LPARAM, LRESULT, WPARAM,
     };
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, DispatchMessageW, GetMessageW, KillTimer, SetTimer, SetWindowsHookExW,
+        UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
+        WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
+    };
+
+    /// Период плановой переустановки хука. Снятие хука по таймауту бывает
+    /// только под тяжёлой нагрузкой, так что минута ограничивает время
+    /// «мёртвого» хоткея, а цена — два дешёвых системных вызова в минуту.
+    /// Чаще не нужно: каждая переустановка открывает микросекундный зазор,
+    /// в котором событие может пройти мимо хука.
+    const REHOOK_INTERVAL_MS: u32 = 60_000;
 
     struct HookCtx {
         shared_key: Arc<AtomicU32>,
@@ -726,41 +817,159 @@ fn spawn_listener(
         return;
     }
 
+    /// Колбэк WH_KEYBOARD_LL. Выполняется на потоке хука внутри GetMessageW,
+    /// и ввод всей системы ждёт его возврата: дольше LowLevelHooksTimeout —
+    /// и Windows молча снимает хук. Поэтому здесь только атомики и send в
+    /// unbounded-канал: никаких логов, Mutex, форматирования строк и
+    /// аллокаций сверх send. Хук listen-only: событие всегда уходит дальше
+    /// по цепочке, ничего не проглатываем.
     unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        // code < 0 (не HC_ACTION): по контракту сразу передаём дальше.
         if code >= 0 {
             if let Some(ctx) = CTX.get() {
                 let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
-                let vk = kb.vkCode;
-                let word = &ctx.down[((vk / 64) as usize).min(3)];
-                let bit = 1u64 << (vk % 64);
-                match wparam as u32 {
-                    WM_KEYDOWN | WM_SYSKEYDOWN => {
-                        if word.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
-                            on_press(vk, &ctx.shared_key, &ctx.capture, &ctx.ctrl_tx);
+                // Ctrl+V, который вставляет сам Voxy, — не нажатие человека:
+                // ни state machine, ни маска зажатых клавиш его не видят.
+                if !win_hook::is_own_input(kb.dwExtraInfo) {
+                    let vk = kb.vkCode;
+                    let (index, bit) = win_hook::down_slot(vk);
+                    let word = &ctx.down[index];
+                    match wparam as u32 {
+                        WM_KEYDOWN | WM_SYSKEYDOWN => {
+                            if word.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+                                on_press(vk, &ctx.shared_key, &ctx.capture, &ctx.ctrl_tx);
+                            }
                         }
+                        WM_KEYUP | WM_SYSKEYUP => {
+                            word.fetch_and(!bit, Ordering::Relaxed);
+                            on_release(vk, &ctx.shared_key, &ctx.ctrl_tx);
+                        }
+                        _ => {}
                     }
-                    WM_KEYUP | WM_SYSKEYUP => {
-                        word.fetch_and(!bit, Ordering::Relaxed);
-                        on_release(vk, &ctx.shared_key, &ctx.ctrl_tx);
-                    }
-                    _ => {}
                 }
             }
         }
+        // Первый аргумент CallNextHookEx игнорируется, поэтому HHOOK колбэку
+        // не нужен и живёт локальной переменной потока хука.
         CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
     }
 
-    std::thread::spawn(|| unsafe {
-        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), std::ptr::null_mut(), 0);
-        if hook.is_null() {
-            log::error!("не удалось установить клавиатурный хук");
-            return;
+    /// (Пере)установка хука на потоке хука: снять `old` (если есть), затем
+    /// поставить новый — двух хуков одновременно не бывает. Возвращает
+    /// текущий хук; null — хука нет, следующий тик таймера попробует снова.
+    /// Логирует только редкие события; плановая замена — на уровне debug.
+    unsafe fn reinstall_hook(old: HHOOK, module: HMODULE) -> HHOOK {
+        // Работающего хука до этого вызова не было: успех стоит показать в логе.
+        let mut was_lost = old.is_null();
+        if !old.is_null() && UnhookWindowsHookEx(old) == 0 {
+            let err = GetLastError();
+            if err != ERROR_INVALID_HOOK_HANDLE {
+                // Хук, возможно, всё ещё стоит: второй дал бы каждое
+                // событие дважды. Оставляем старый, пробуем на следующем тике.
+                log::error!(
+                    "не удалось снять клавиатурный хук (GetLastError={err}), повтор через минуту"
+                );
+                return old;
+            }
+            // Хендл уже недействителен — система сама сняла хук (скорее
+            // всего, колбэк не уложился в LowLevelHooksTimeout).
+            log::warn!("клавиатурный хук был снят системой, ставлю заново");
+            was_lost = true;
         }
-        log::info!("глобальный хоткей активен (клавиатурный хук установлен)");
-        // Хук требует цикл сообщений на своём потоке.
-        let mut msg: MSG = std::mem::zeroed();
-        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
-    });
+        // hMod: контракт SetWindowsHookEx с dwThreadId = 0 требует модуль,
+        // в котором лежит колбэк (это exe).
+        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), module, 0);
+        if hook.is_null() {
+            // Повтор — на следующем тике таймера (если таймер создан).
+            let err = GetLastError();
+            log::error!("не удалось установить клавиатурный хук (GetLastError={err})");
+        } else if was_lost {
+            // Подстрока «хук установлен» — контракт со smoke-тестом CI.
+            log::info!("глобальный хоткей активен (клавиатурный хук установлен)");
+        } else {
+            log::debug!("клавиатурный хук переустановлен (плановая проверка)");
+        }
+        hook
+    }
+
+    let spawned = std::thread::Builder::new()
+        .name("voxy-hotkey-hook".into())
+        .spawn(|| unsafe {
+            // Колбэк выполняется только когда этот поток получает квант.
+            // Пока распознавание грузит все ядра, поток с обычным приоритетом
+            // может не успеть за LowLevelHooksTimeout — и хук пропадёт.
+            if SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) == 0 {
+                let err = GetLastError();
+                log::warn!("не удалось поднять приоритет потока хука (GetLastError={err})");
+            }
+            let Some(ctx) = CTX.get() else {
+                return;
+            };
+            let module = GetModuleHandleW(std::ptr::null());
+            let mut hook = reinstall_hook(std::ptr::null_mut(), module);
+
+            // Таймер без окна: WM_TIMER приходит в очередь этого потока
+            // (msg.hwnd == null, wParam == id таймера).
+            let timer = SetTimer(std::ptr::null_mut(), 0, REHOOK_INTERVAL_MS, None);
+            if timer == 0 {
+                let err = GetLastError();
+                log::warn!(
+                    "таймер переустановки хука не создан (GetLastError={err}): самолечение выключено"
+                );
+                if hook.is_null() {
+                    return; // ни хука, ни повторов: ошибка уже в логе
+                }
+            }
+
+            // Сколько тиков подряд переустановка ждала отпускания клавиш.
+            let mut deferred: u32 = 0;
+            let mut msg: MSG = std::mem::zeroed();
+            loop {
+                // 0 — WM_QUIT, -1 — ошибка; иначе пришло сообщение.
+                match GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) {
+                    0 => {
+                        log::error!(
+                            "цикл сообщений хука завершён (WM_QUIT): хоткей выключен до перезапуска"
+                        );
+                        break;
+                    }
+                    -1 => {
+                        let err = GetLastError();
+                        log::error!(
+                            "цикл сообщений хука завершён (GetLastError={err}): хоткей выключен до перезапуска"
+                        );
+                        break;
+                    }
+                    _ => {}
+                }
+                if msg.message == WM_TIMER
+                    && msg.hwnd.is_null()
+                    && timer != 0
+                    && msg.wParam == timer
+                {
+                    if win_hook::rehook_due(win_hook::no_key_held(&ctx.down), deferred) {
+                        deferred = 0;
+                        hook = reinstall_hook(hook, module);
+                    } else {
+                        deferred += 1;
+                    }
+                    continue;
+                }
+                // Окон на этом потоке нет; диспетчеризация безвредна и
+                // ничего не сломает, если система что-то сюда пришлёт.
+                DispatchMessageW(&msg);
+            }
+
+            if timer != 0 {
+                KillTimer(std::ptr::null_mut(), timer);
+            }
+            if !hook.is_null() {
+                UnhookWindowsHookEx(hook);
+            }
+        });
+    if let Err(e) = spawned {
+        log::error!("не удалось запустить поток клавиатурного хука: {e}");
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -830,5 +1039,45 @@ mod tests {
         c.begin();
         c.set_settings_focused(false);
         assert_eq!(press(&c, 0x00), ["cancelled"]);
+    }
+
+    /// Хук Windows пропускает только Ctrl+V самого Voxy (метка enigo);
+    /// физические клавиши и чужой injected-ввод (dwExtraInfo 0 у Alt-тапа
+    /// tao, свои значения у ремаперов) остаются нажатиями.
+    #[test]
+    fn hook_ignores_only_own_injected_input() {
+        assert!(win_hook::is_own_input(enigo::EVENT_MARKER as usize));
+        assert!(win_hook::is_own_input(100));
+        assert!(!win_hook::is_own_input(0));
+        assert!(!win_hook::is_own_input(101));
+        assert!(!win_hook::is_own_input(usize::MAX));
+    }
+
+    /// Плановая переустановка хука ждёт, пока все клавиши отпущены, но не
+    /// бесконечно: залипший бит не должен навсегда выключить самолечение.
+    #[test]
+    fn rehook_waits_for_released_keys_but_not_forever() {
+        let down: [AtomicU64; 4] = Default::default();
+        assert!(win_hook::no_key_held(&down));
+
+        // Right Ctrl (VK 0xA3) зажат: третье слово, бит 35.
+        let (index, bit) = win_hook::down_slot(0xA3);
+        assert_eq!((index, bit), (2, 1u64 << 35));
+        down[index].fetch_or(bit, Ordering::Relaxed);
+        assert!(!win_hook::no_key_held(&down));
+        // Крайние коды попадают в маску, а не за её пределы.
+        assert_eq!(win_hook::down_slot(0x00), (0, 1));
+        assert_eq!(win_hook::down_slot(0xFF), (3, 1u64 << 63));
+
+        assert!(!win_hook::rehook_due(false, 0));
+        assert!(!win_hook::rehook_due(
+            false,
+            win_hook::MAX_REHOOK_DEFERRALS - 1
+        ));
+        assert!(win_hook::rehook_due(false, win_hook::MAX_REHOOK_DEFERRALS));
+        assert!(win_hook::rehook_due(true, 0));
+
+        down[index].fetch_and(!bit, Ordering::Relaxed);
+        assert!(win_hook::no_key_held(&down));
     }
 }
