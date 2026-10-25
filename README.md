@@ -65,7 +65,7 @@ Besides the app, this deletes the downloaded models, settings, history and saved
 curl -fsSL https://raw.githubusercontent.com/DIZRAID/voxy/main/install.sh | bash -s -- --uninstall --keep-data
 ```
 
-To remove everything by hand, see [Uninstalling Voxy](docs/TROUBLESHOOTING.md#uninstalling-voxy).
+To remove everything by hand, see [Uninstalling Voxy](docs/TROUBLESHOOTING.md#uninstalling-on-macos).
 
 #### Requirements
 
@@ -103,7 +103,7 @@ Besides the app, this deletes the downloaded models, settings, history, the log 
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/DIZRAID/voxy/main/install.ps1))) -Uninstall -KeepData
 ```
 
-To remove everything by hand, see [Uninstalling Voxy](docs/TROUBLESHOOTING.md#uninstalling-voxy).
+To remove everything by hand, see [Uninstalling Voxy](docs/TROUBLESHOOTING.md#uninstalling-on-windows).
 
 #### Requirements on Windows
 

@@ -257,7 +257,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
   you pick one. Left Alt activates app menus (Settings warns about it too),
   and when Voxy brings Settings to the front (for example on a second
   launch), its window library may send a synthetic Left Alt tap, which
-  toggles recording in Toggle mode. Right Ctrl or an F-key works better.
+  can start or stop a recording in Toggle or Dynamic mode. Right Ctrl or an
+  F-key works better.
 - **Unsigned installer.** It isn't code-signed, so SmartScreen warns when you
   run the downloaded `.exe` (the PowerShell installer avoids the prompt).
   Code signing is on the roadmap.
