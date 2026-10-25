@@ -108,25 +108,72 @@ pub struct HistoryEntry {
     pub duration_ms: u64,
 }
 
+/// Папка данных: настройки, история, модели, кэш каталога (и Voxy.log на
+/// Windows, см. lib.rs init_logging).
+///
+/// Локальная, не перемещаемая: на Windows это %LOCALAPPDATA%\com.dizraid.voice,
+/// а не %APPDATA% (Roaming) — в доменных профилях Roaming синхронизируется
+/// между машинами, и вместе с ним ездил бы ~1 ГБ моделей. Данные WebView2
+/// Tauri и так держит в этой же папке (EBWebView). На macOS
+/// app_local_data_dir() и app_data_dir() — одна и та же папка
+/// (~/Library/Application Support/com.dizraid.voice), так что переезда нет.
 pub fn data_dir(app: &AppHandle) -> PathBuf {
-    let dir = app.path().app_data_dir().unwrap_or_else(|e| {
-        log::error!("app data dir недоступен ({e}), использую временную папку");
+    let dir = app.path().app_local_data_dir().unwrap_or_else(|e| {
+        // Не бывает на практике (нет домашней папки/профиля). Тогда пишем во
+        // временную папку: приложение работает, но настройки и модели не
+        // переживут очистку temp.
+        log::error!("app local data dir недоступен ({e}), использую временную папку");
         std::env::temp_dir().join("com.dizraid.voice")
     });
     let _ = fs::create_dir_all(&dir);
     dir
 }
 
+/// Коды ошибок rename, после которых стоит повторить попытку. Windows:
+/// ERROR_ACCESS_DENIED (5) и ERROR_SHARING_VIOLATION (32) — целевой файл на
+/// миг открыт кем-то ещё (Defender, индексатор, параллельная запись того
+/// же файла из другого потока: MoveFileEx не заменяет файл, пока его
+/// открывают другие). На macOS/Linux rename поверх файла атомарен и так.
+#[cfg(windows)]
+const RENAME_RETRYABLE: &[i32] = &[5, 32];
+#[cfg(not(windows))]
+const RENAME_RETRYABLE: &[i32] = &[];
+/// Попыток rename всего; паузы между ними 20, 40, 60, 80 мс (≤ 0,2 с).
+const RENAME_ATTEMPTS: u32 = 5;
+
+/// Нужна ли ещё попытка rename после ошибки `e` (attempt — номер
+/// неудачной попытки, с 1).
+fn rename_should_retry(e: &std::io::Error, attempt: u32, retryable: &[i32]) -> bool {
+    attempt < RENAME_ATTEMPTS && e.raw_os_error().is_some_and(|code| retryable.contains(&code))
+}
+
+/// rename с короткими повторами при временной блокировке файла (Windows).
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut attempt = 1;
+    loop {
+        match fs::rename(from, to) {
+            Err(e) if rename_should_retry(&e, attempt, RENAME_RETRYABLE) => {
+                std::thread::sleep(std::time::Duration::from_millis(20 * u64::from(attempt)));
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Атомарная запись: сначала во временный файл, потом rename. Сбой или
 /// выключение посреди записи не оставит обрезанный JSON, который при
 /// следующем запуске молча превратился бы в настройки по умолчанию.
 /// Имя временного файла своё у каждой записи: две записи из разных потоков
-/// не пишут в один и тот же .tmp.
+/// не пишут в один и тот же .tmp. На Windows rename повторяется, если
+/// целевой файл на миг занят (rename_with_retry): иначе сохранение
+/// настроек или истории молча терялось бы (только строка в логе), а тест
+/// atomic_writes_use_distinct_temp_files (8 потоков в один файл) падал бы.
 fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("json.{}-{seq}.tmp", std::process::id()));
-    let result = fs::write(&tmp, contents).and_then(|()| fs::rename(&tmp, path));
+    let result = fs::write(&tmp, contents).and_then(|()| rename_with_retry(&tmp, path));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
@@ -258,6 +305,29 @@ mod tests {
         assert!(retain_recent(&mut h, "24h", now));
         assert_eq!(h.len(), 2);
         assert!(!retain_recent(&mut h, "24h", now));
+    }
+
+    /// Повтор rename — только для кодов из списка и не больше
+    /// RENAME_ATTEMPTS попыток всего.
+    #[test]
+    fn rename_retries_only_transient_errors() {
+        let sharing = std::io::Error::from_raw_os_error(32);
+        let denied = std::io::Error::from_raw_os_error(5);
+        let other = std::io::Error::from_raw_os_error(2);
+        let no_code = std::io::Error::other("x");
+        let windows = &[5, 32];
+        assert!(rename_should_retry(&sharing, 1, windows));
+        assert!(rename_should_retry(&denied, RENAME_ATTEMPTS - 1, windows));
+        assert!(!rename_should_retry(&denied, RENAME_ATTEMPTS, windows));
+        assert!(!rename_should_retry(&other, 1, windows));
+        assert!(!rename_should_retry(&no_code, 1, windows));
+        // macOS: повторов нет совсем.
+        assert!(!rename_should_retry(&sharing, 1, &[]));
+        if cfg!(windows) {
+            assert_eq!(RENAME_RETRYABLE, &[5, 32]);
+        } else {
+            assert!(RENAME_RETRYABLE.is_empty());
+        }
     }
 
     #[test]

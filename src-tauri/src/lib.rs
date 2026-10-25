@@ -14,12 +14,17 @@ mod store;
 mod worker;
 
 use serde_json::json;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::utils::config::{WindowConfig, WindowEffectsConfig};
+use tauri::utils::WindowEffect;
+use tauri::webview::PageLoadEvent;
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl};
 use tauri_plugin_autostart::ManagerExt;
 
 use asr::ModelStatus;
@@ -380,8 +385,30 @@ mod url {
 
 // ------------------------------------------------------------------- setup
 
-/// Логи в файл (macOS: ~/Library/Logs/Voxy.log, Windows:
-/// %LOCALAPPDATA%\Voxy.log) — диагностика без запуска через пайпы.
+/// Идентификатор приложения ("identifier" в tauri.conf.json) — имя папки
+/// данных. Продублирован намеренно: логирование поднимается до Tauri, когда
+/// конфиг ещё не прочитан. Тест log_folder_matches_identifier следит, чтобы
+/// строки не разошлись.
+const APP_IDENTIFIER: &str = "com.dizraid.voice";
+
+/// Файл лога. macOS: ~/Library/Logs/Voxy.log (там его ищет Console.app).
+/// Windows: %LOCALAPPDATA%\com.dizraid.voice\Voxy.log — рядом с настройками,
+/// историей и моделями (store::data_dir), так что всё приложение лежит в
+/// одной папке, которую деинсталлятор и install.ps1 -Uninstall стирают целиком.
+fn log_file_path() -> Option<PathBuf> {
+    if cfg!(target_os = "windows") {
+        let dir = Path::new(&std::env::var_os("LOCALAPPDATA")?).join(APP_IDENTIFIER);
+        // На первом запуске папки ещё нет (store::data_dir создаст её позже).
+        let _ = std::fs::create_dir_all(&dir);
+        Some(dir.join("Voxy.log"))
+    } else {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| Path::new(&h).join("Library/Logs/Voxy.log"))
+    }
+}
+
+/// Логи в файл (log_file_path) — диагностика без запуска через пайпы.
 /// VOXY_LOG_STDERR=1 — в stderr.
 fn init_logging() {
     let mut builder =
@@ -393,16 +420,7 @@ fn init_logging() {
     builder.filter_module("ureq", log::LevelFilter::Warn);
     builder.filter_module("ureq::unit", log::LevelFilter::Warn);
     if std::env::var("VOXY_LOG_STDERR").is_err() {
-        let path = if cfg!(target_os = "windows") {
-            std::env::var("LOCALAPPDATA")
-                .ok()
-                .map(|d| std::path::Path::new(&d).join("Voxy.log"))
-        } else {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| std::path::Path::new(&h).join("Library/Logs/Voxy.log"))
-        };
-        if let Some(path) = path {
+        if let Some(path) = log_file_path() {
             if let Ok(file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -415,11 +433,94 @@ fn init_logging() {
     builder.init();
 }
 
+/// Mica — только Windows 11 (сборка 22000+). window-vibrancy молча
+/// проглатывает ошибку, и на Windows 10 осталось бы прозрачное окно, сквозь
+/// которое видно рабочий стол, — поэтому проверяем версию сами.
+const MICA_MIN_BUILD: u32 = 22000;
+
+fn mica_supported(windows_build: u32) -> bool {
+    windows_build >= MICA_MIN_BUILD
+}
+
+/// Номер сборки Windows (RtlGetVersion: без манифеста совместимости, в
+/// отличие от GetVersionEx). Вне Windows не вызывается.
+#[cfg(target_os = "windows")]
+fn windows_build() -> u32 {
+    windows_version::OsVersion::current().build
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_build() -> u32 {
+    0
+}
+
+/// Окно настроек на Windows (конфиг в tauri.conf.json описывает macOS-стекло).
+///
+/// Заголовок — нативный, но всегда тёмный: на Windows `theme` действует на
+/// одно окно (tao: DWMWA_USE_IMMERSIVE_DARK_MODE, плюс цветовая схема
+/// WebView2), а не на всё приложение, как на macOS, где его поэтому и нет в
+/// конфиге. Без него tao следует системной теме приложений, по умолчанию
+/// светлой: белый заголовок над тёмным окном.
+///
+/// - `mica` (Windows 11): прозрачное окно, фон — тёмная Mica от DWM (Tauri
+///   применяет windowEffects сразу после создания окна).
+/// - иначе (Windows 10): непрозрачное окно цвета фона страницы; цвет
+///   заодно убирает белую вспышку до первой отрисовки.
+///
+/// Страница узнаёт вариант из ?backdrop= (boot.js → html[data-backdrop]).
+fn windows_settings_config(mut config: WindowConfig, mica: bool) -> WindowConfig {
+    config.theme = Some(tauri::Theme::Dark);
+    if mica {
+        config.transparent = true;
+        config.window_effects = Some(WindowEffectsConfig {
+            effects: vec![WindowEffect::MicaDark],
+            state: None,
+            radius: None,
+            color: None,
+        });
+        config.background_color = None;
+        config.url = WebviewUrl::App("settings.html?backdrop=mica".into());
+    } else {
+        config.transparent = false;
+        config.window_effects = None;
+        config.background_color = Some(tauri::window::Color(26, 22, 43, 255));
+        config.url = WebviewUrl::App("settings.html?backdrop=opaque".into());
+    }
+    config
+}
+
+/// Когда создавалось окно настроек (только Windows, см. reveal_existing_settings).
+static SETTINGS_CREATED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Сколько ждать конца загрузки страницы, прежде чем показать окно как есть.
+const SETTINGS_LOAD_GRACE: Duration = Duration::from_secs(3);
+
+/// Окно настроек уже есть — показать его сейчас? Видимое — да (вывести
+/// вперёд). Скрытым оно бывает только на Windows, между созданием и концом
+/// загрузки страницы: его покажет on_page_load, а ранний show() вернул бы
+/// вспышку пустого окна. Так бывает при двойном клике по значку в трее
+/// (Click, DoubleClick и ещё Click подряд). Если загрузка не закончилась за
+/// SETTINGS_LOAD_GRACE (упал процесс WebView2?), показываем как есть, чтобы
+/// окно не осталось невидимым навсегда.
+fn reveal_existing_settings(visible: bool, since_created: Duration) -> bool {
+    visible || since_created >= SETTINGS_LOAD_GRACE
+}
+
 /// Окно настроек создаётся только при открытии и уничтожается при
 /// закрытии: скрытое окно держало отдельный WebKit-процесс всё время
 /// работы приложения (25 МБ в покое, до ~200 МБ пика).
 fn show_settings(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
+        if cfg!(target_os = "windows") {
+            let visible = window.is_visible().unwrap_or(true);
+            let since_created = lock(&SETTINGS_CREATED_AT).map_or(Duration::MAX, |t| t.elapsed());
+            if !reveal_existing_settings(visible, since_created) {
+                return;
+            }
+            // tao не активирует свёрнутое окно (set_focus пропускает
+            // минимизированные), и клик по трею ничего бы не делал.
+            let _ = window.unminimize();
+        }
         let _ = window.show();
         let _ = window.set_focus();
         return;
@@ -435,19 +536,39 @@ fn show_settings(app: &AppHandle) {
         log::error!("в tauri.conf.json нет окна settings");
         return;
     };
-    // Стекло (прозрачное окно + NSVisualEffectView из windowEffects) — только
-    // macOS. Порт на Windows не проверен: там окно непрозрачное, фон рисует
-    // CSS html[data-platform="win"], а цвет ниже убирает белую вспышку.
-    let config = if cfg!(target_os = "macos") {
-        config
+    // macOS: стекло из конфига как есть (прозрачное окно + NSVisualEffectView
+    // из windowEffects). Windows: см. windows_settings_config.
+    let config = if cfg!(target_os = "windows") {
+        let build = windows_build();
+        let mica = mica_supported(build);
+        log::info!(
+            "окно настроек: Windows build {build}, фон {}",
+            if mica { "Mica" } else { "непрозрачный" }
+        );
+        windows_settings_config(config, mica)
     } else {
-        let mut config = config;
-        config.transparent = false;
-        config.window_effects = None;
-        config.background_color = Some(tauri::window::Color(26, 22, 43, 255));
         config
     };
-    match tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build()) {
+    let mut builder = match tauri::WebviewWindowBuilder::from_config(app, &config) {
+        Ok(builder) => builder,
+        Err(e) => {
+            log::error!("не удалось создать окно настроек: {e}");
+            return;
+        }
+    };
+    // Windows: окно (в конфиге visible: false) показывается, когда страница
+    // загрузилась, — иначе мелькнул бы пустой фон (тёмный у непрозрачного
+    // окна, сквозной у Mica). macOS показывает сразу, как и раньше.
+    if cfg!(target_os = "windows") {
+        *lock(&SETTINGS_CREATED_AT) = Some(Instant::now());
+        builder = builder.on_page_load(|window, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        });
+    }
+    match builder.build() {
         Ok(window) => {
             #[cfg(target_os = "macos")]
             force_dark_appearance(&window);
@@ -467,8 +588,10 @@ fn show_settings(app: &AppHandle) {
                     _ => {}
                 });
             }
-            let _ = window.show();
-            let _ = window.set_focus();
+            if !cfg!(target_os = "windows") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
         }
         Err(e) => log::error!("не удалось создать окно настроек: {e}"),
     }
@@ -505,13 +628,15 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .item(&quit_item)
         .build()?;
 
-    // Template-глиф: macOS сам перекрашивает его под тему меню-бара
-    // (чёрный на светлой, белый на тёмной) — как у системных иконок.
-    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    let icon = tauri::image::Image::from_bytes(TRAY_ICON)?;
 
     TrayIconBuilder::with_id("main")
         .icon(icon)
-        .icon_as_template(true)
+        // Template перекрашивает только macOS; на Windows флаг ничего не делает.
+        .icon_as_template(cfg!(target_os = "macos"))
+        // Windows: меню — по правой кнопке, левая открывает настройки (как
+        // у системных значков). macOS: меню по левой, как в строке меню.
+        .show_menu_on_left_click(!cfg!(target_os = "windows"))
         .tooltip("Voxy — local dictation")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -519,8 +644,40 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "quit" => app.exit(0),
             _ => {}
         })
+        .on_tray_icon_event(|tray, event| {
+            if cfg!(target_os = "windows") && tray_click_opens_settings(&event) {
+                show_settings(tray.app_handle());
+            }
+        })
         .build(app)?;
     Ok(())
+}
+
+/// macOS: template-глиф, macOS сам перекрашивает его под тему меню-бара
+/// (чёрный на светлой, белый на тёмной) — как у системных иконок.
+#[cfg(target_os = "macos")]
+const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
+/// Windows: цветной значок приложения 32×32 — читается и на светлой, и на
+/// тёмной панели задач (template-флага там нет, чёрный глиф на тёмной
+/// панели почти не виден). Windows сам уменьшает его до 16–24 px.
+#[cfg(not(target_os = "macos"))]
+const TRAY_ICON: &[u8] = include_bytes!("../icons/32x32.png");
+
+/// Windows: отпускание левой кнопки или двойной клик левой по значку в
+/// трее открывает настройки. Двойной клик приходит как Click, DoubleClick и
+/// снова Click — повторные вызовы show_settings безвредны.
+fn tray_click_opens_settings(event: &TrayIconEvent) -> bool {
+    matches!(
+        event,
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } | TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        }
+    )
 }
 
 /// Срок хранения истории соблюдается и когда приложение неделями не
@@ -640,10 +797,13 @@ pub fn run() {
             app.manage(island::measure_metrics());
             island::create(&handle)?;
             build_tray(app)?;
+            // Маркер для smoke-теста в CI: процесс дошёл до трея и островка.
+            log::info!("startup complete: tray and island ready");
             let keep = store::read(&settings).history_keep.clone();
             store::prune_history(&handle, &keep);
 
             let active = resolve_startup_engine(&handle, &settings);
+            let needs_download = matches!(active, StartupEngine::NeedsDownload(_));
 
             app.manage(AppShared {
                 settings,
@@ -666,8 +826,15 @@ pub fn run() {
             }
 
             // Без Accessibility/Input Monitoring ни хоткей, ни вставка
-            // не работают — сразу показываем настройки с баннером.
-            if !platform::accessibility_trusted() || !platform::input_monitoring_granted() {
+            // не работают — сразу показываем настройки с баннером. Первый
+            // запуск (модели нет, идёт скачивание) — тоже: на Windows
+            // разрешений нет, и без этого первый запуск был бы невидим
+            // (значок в трее Windows 11 прячет в переполнение), пока в фоне
+            // качаются сотни мегабайт.
+            if !platform::accessibility_trusted()
+                || !platform::input_monitoring_granted()
+                || needs_download
+            {
                 show_settings(&handle);
             }
 
@@ -739,6 +906,132 @@ mod tests {
             config.app.macos_private_api,
             "прозрачное окно требует macOSPrivateApi"
         );
+    }
+
+    /// Окно настроек на Windows: всегда тёмный нативный заголовок; Mica на
+    /// Windows 11, непрозрачный фон на Windows 10; страница узнаёт вариант
+    /// из ?backdrop=. Остальное (рамка, размер, скрытый старт) — из конфига.
+    #[test]
+    fn windows_settings_window_variants() {
+        use super::{mica_supported, windows_settings_config};
+        use tauri::utils::{config::Color, WindowEffect};
+        use tauri::{Theme, WebviewUrl};
+        let config: tauri::Config =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        let base = config
+            .app
+            .windows
+            .iter()
+            .find(|w| w.label == "settings")
+            .expect("settings")
+            .clone();
+
+        let mica = windows_settings_config(base.clone(), true);
+        assert_eq!(mica.theme, Some(Theme::Dark));
+        assert!(mica.transparent);
+        let fx = mica.window_effects.as_ref().expect("windowEffects");
+        assert_eq!(fx.effects, vec![WindowEffect::MicaDark]);
+        assert!(fx.state.is_none() && fx.radius.is_none() && fx.color.is_none());
+        assert_eq!(mica.background_color, None);
+        assert_eq!(mica.url, WebviewUrl::App("settings.html?backdrop=mica".into()));
+
+        let opaque = windows_settings_config(base.clone(), false);
+        assert_eq!(opaque.theme, Some(Theme::Dark));
+        assert!(!opaque.transparent);
+        assert!(opaque.window_effects.is_none());
+        assert_eq!(opaque.background_color, Some(Color(26, 22, 43, 255)));
+        assert_eq!(opaque.url, WebviewUrl::App("settings.html?backdrop=opaque".into()));
+
+        for w in [&mica, &opaque] {
+            // Нативный заголовок (без своего), окно скрыто до загрузки страницы.
+            assert!(w.decorations && !w.create && !w.visible);
+            assert_eq!((w.width, w.height), (base.width, base.height));
+        }
+
+        assert!(!mica_supported(19045)); // Windows 10 22H2
+        assert!(!mica_supported(21999));
+        assert!(mica_supported(22000)); // Windows 11 21H2
+        assert!(mica_supported(26100)); // Windows 11 24H2
+    }
+
+    /// Уже созданное, но скрытое (грузится) окно не показывается раньше
+    /// конца загрузки — кроме случая, когда загрузка зависла.
+    #[test]
+    fn settings_window_waits_for_page_load() {
+        use super::{reveal_existing_settings, SETTINGS_LOAD_GRACE};
+        use std::time::Duration;
+        assert!(reveal_existing_settings(true, Duration::ZERO));
+        assert!(!reveal_existing_settings(false, Duration::from_millis(300)));
+        assert!(reveal_existing_settings(false, SETTINGS_LOAD_GRACE));
+        assert!(reveal_existing_settings(false, Duration::MAX));
+    }
+
+    /// Windows: настройки открывает левый клик (отпускание) и двойной клик
+    /// левой; правая кнопка — меню, наведение — ничего.
+    #[test]
+    fn tray_left_click_opens_settings() {
+        use super::tray_click_opens_settings;
+        use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent, TrayIconId};
+        let id = || TrayIconId::new("main");
+        let position = tauri::PhysicalPosition::new(0.0, 0.0);
+        let click = |button, button_state| TrayIconEvent::Click {
+            id: id(),
+            position,
+            rect: tauri::Rect::default(),
+            button,
+            button_state,
+        };
+        let double = |button| TrayIconEvent::DoubleClick {
+            id: id(),
+            position,
+            rect: tauri::Rect::default(),
+            button,
+        };
+        assert!(tray_click_opens_settings(&click(MouseButton::Left, MouseButtonState::Up)));
+        assert!(!tray_click_opens_settings(&click(MouseButton::Left, MouseButtonState::Down)));
+        assert!(!tray_click_opens_settings(&click(MouseButton::Right, MouseButtonState::Up)));
+        assert!(tray_click_opens_settings(&double(MouseButton::Left)));
+        assert!(!tray_click_opens_settings(&double(MouseButton::Right)));
+        assert!(!tray_click_opens_settings(&TrayIconEvent::Enter {
+            id: id(),
+            position,
+            rect: tauri::Rect::default(),
+        }));
+    }
+
+    /// Лог на Windows лежит в папке приложения; её имя продублировано в
+    /// lib.rs (логирование стартует до Tauri) и должно совпадать с конфигом.
+    #[test]
+    fn log_folder_matches_identifier() {
+        let config: tauri::Config =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        assert_eq!(super::APP_IDENTIFIER, config.identifier);
+    }
+
+    /// Установщик Windows: значок .ico (ресурс exe и NSIS), издатель,
+    /// английский и русский языки, WebView2 через загрузчик.
+    #[test]
+    fn windows_bundle_is_configured() {
+        use std::path::Path;
+        use tauri::utils::config::WebviewInstallMode;
+        let config: tauri::Config =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        let bundle = &config.bundle;
+        assert!(bundle.icon.iter().any(|i| i == "icons/icon.ico"), "{:?}", bundle.icon);
+        assert!(Path::new(env!("CARGO_MANIFEST_DIR")).join("icons/icon.ico").is_file());
+        assert_eq!(bundle.publisher.as_deref(), Some("DIZRAID"));
+        let nsis = bundle.windows.nsis.as_ref().expect("bundle.windows.nsis");
+        let ico = Some(Path::new("icons/icon.ico"));
+        assert_eq!(nsis.installer_icon.as_deref(), ico);
+        assert_eq!(nsis.uninstaller_icon.as_deref(), ico);
+        let languages = nsis.languages.as_deref().unwrap_or_default();
+        for lang in ["English", "Russian"] {
+            assert!(languages.iter().any(|l| l == lang), "нет языка {lang}: {languages:?}");
+        }
+        assert!(matches!(
+            bundle.windows.webview_install_mode,
+            WebviewInstallMode::DownloadBootstrapper { .. }
+        ));
     }
 
     /// Релизы подписываются (release.yml, APPLE_SIGNING_IDENTITY) с hardened
