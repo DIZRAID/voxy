@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <title>Voxy</title>
+  <!-- WebView2 (Windows) asks for /favicon.ico when a page names no icon,
+       and Tauri logs every missing asset as an error. -->
+  <link rel="icon" href="favicon.png" />
   <!-- Платформа, подложка и демо-режим — до стилей, чтобы не было вспышки (boot.js).
        guard.js отменяет браузерные сочетания (F5, Ctrl+P…) и контекстное меню. -->
   <script src="boot.js"></script>
