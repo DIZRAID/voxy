@@ -235,7 +235,7 @@ check_system() {
   local mode=$1 os arch version
   os=${VOXY_FAKE_OS:-$(uname -s)}
   if [ "$os" != "Darwin" ]; then
-    die "This installer is for macOS, and this system is $os. On Windows, get the -setup.exe from https://github.com/$REPO/releases/latest"
+    die "This installer is for macOS, and this system is $os. On Windows, run this in PowerShell instead: irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex"
   fi
   [ "$mode" = "install" ] || return 0
 

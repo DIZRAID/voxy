@@ -14,18 +14,20 @@
 #                   whole third-party build graph (crates' build scripts and
 #                   proc macros, the Tauri CLI), so it gets no write access
 #                   and no token in its environment.
-#   publish         checks the macOS app that install.sh will download,
+#   publish         checks the macOS app that install.sh will download and
+#                   the Windows installer that install.ps1 will download,
 #                   attests the files (Sigstore build provenance), uploads
 #                   them into the draft, compares each upload's SHA-256 with
 #                   the checked file and publishes the draft (marked Latest).
 #                   It runs no repository or third-party build code.
 #
-# install.sh at the repository root downloads the .app.tar.gz from
+# install.sh and install.ps1 at the repository root download the .app.tar.gz
+# and the _x64-setup.exe from
 # https://api.github.com/repos/<owner>/<repo>/releases/latest, so a release
-# without a working macOS app must never become Latest. Once published, the
-# release is Latest right away and every install command picks it up. A
-# failed Windows build doesn't block publishing (the Windows port is
-# experimental).
+# without a working macOS app or Windows installer must never become Latest:
+# publish runs only when both builds succeeded, and checks both bundles; if
+# anything is missing, the release stays a draft. Once published, the release
+# is Latest right away and every install command picks it up.
 #
 # Output (for version 0.1.0):
 #   macOS (Apple Silicon): Voxy_0.1.0_aarch64.app.tar.gz  (used by install.sh)
@@ -164,9 +166,25 @@ jobs:
 
           If you saved an API key for an online provider, macOS may ask for your login password the first time Voxy reads it after an update: click Always Allow.
 
-          ## Windows 10/11, x64 (experimental)
+          ## Windows 10/11 (x64)
 
-          The `-setup.exe` installer, when the Windows build succeeded. The Windows port has not been tested yet. SmartScreen may warn about an unknown publisher: click More info → Run anyway.
+          Install or update with one command in PowerShell (no administrator rights needed):
+
+          ```powershell
+          irm https://raw.githubusercontent.com/DIZRAID/voxy/main/install.ps1 | iex
+          ```
+
+          It downloads the `_x64-setup.exe` installer below, checks its SHA-256, installs Voxy for your user (in `%LOCALAPPDATA%\Voxy`) and starts it. Run the same command to update.
+
+          Or download the `_x64-setup.exe` below and run it. Voxy is not code-signed yet, so SmartScreen may say "Windows protected your PC": click More info → Run anyway. The PowerShell command does not get this warning.
+
+          Voxy lives in the notification area (the tray icon, maybe under the ^ arrow; click it to open Settings) and in the Start menu. On the first launch Settings opens while the default speech model (670 MB) downloads. Hold Right Ctrl, speak and release to dictate. Models, settings, history and the log are in `%LOCALAPPDATA%\com.dizraid.voice`. Voxy needs Windows 10 version 1809 or later on an x64 PC (ARM PCs run it under emulation, slower); the installer adds Microsoft Edge WebView2 if it is missing.
+
+          To uninstall, run this in PowerShell (add `-KeepData` to keep the models, settings and API keys), or remove Voxy in Settings → Apps:
+
+          ```powershell
+          & ([scriptblock]::Create((irm https://raw.githubusercontent.com/DIZRAID/voxy/main/install.ps1))) -Uninstall
+          ```
 
           ## Verifying a download
 
@@ -272,7 +290,9 @@ jobs:
           # The locked tauri-build (2.6.3) only reads this variable. Tauri CLI
           # 2.11 sets it by itself, but the next minor CLI release stops doing
           # that in favour of the build.windows.staticVCRuntime config key,
-          # which tauri-build 2.6.3 doesn't read. macOS builds ignore it.
+          # which tauri-build 2.6.3 doesn't read. build.rs defaults it to true
+          # for MSVC builds as well; it stays explicit here, so the release
+          # does not depend on that default. macOS builds ignore it.
           STATIC_VCRUNTIME: "true"
           # What tauri-action v1 set for the .dmg (lay out the window with
           # Finder even on CI).
@@ -344,10 +364,11 @@ jobs:
 
   publish:
     name: Publish
+    # No `if:`, so only when every job above succeeded: the release needs both
+    # the macOS app (install.sh) and the Windows installer (install.ps1).
+    # After a failed build the draft stays a draft; "Re-run failed jobs"
+    # re-runs that build and then this job.
     needs: [check-version, create-release, build]
-    # Also after a failed Windows build: the macOS app is what counts, and the
-    # steps below require it.
-    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
     # macOS for codesign, to check the app the way install.sh gets it.
     runs-on: macos-latest
     timeout-minutes: 15
@@ -370,8 +391,6 @@ jobs:
           path: artifacts/macos
 
       - name: Download the Windows bundle
-        id: windows
-        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: bundle-windows
@@ -380,11 +399,11 @@ jobs:
       # Check the archive install.sh downloads: Voxy.app at its root, a valid
       # sealed signature, the hardened runtime and the microphone entitlement
       # (without it Voxy would record silence). A Tauri CLI that signed
-      # differently would stop here, before anyone installs it. The upload
-      # step then proves (SHA-256) that the release gets these exact bytes.
-      - name: Check the macOS app
-        env:
-          WINDOWS_OUTCOME: ${{ steps.windows.outcome }}
+      # differently would stop here, before anyone installs it. Then the
+      # installer install.ps1 downloads: present, a Windows program (MZ) and
+      # not a stub. The upload step then proves (SHA-256) that the release
+      # gets these exact bytes.
+      - name: Check the bundles
         run: |
           set -euo pipefail
           mkdir upload
@@ -398,11 +417,25 @@ jobs:
             cp "artifacts/macos/$f" upload/
           done
           exe="Voxy_${VERSION}_x64-setup.exe"
-          if [ "$WINDOWS_OUTCOME" = "success" ] && [ -s "artifacts/windows/$exe" ]; then
-            cp "artifacts/windows/$exe" upload/
-          else
-            echo "::warning::The Windows installer is missing; publishing v$VERSION without it."
+          if [ ! -f "artifacts/windows/$exe" ]; then
+            echo "::error::The Windows build has no $exe, so the release stays a draft (install.ps1 needs the Windows installer)."
+            exit 1
           fi
+          # The installer carries the app with ONNX Runtime and sherpa-onnx
+          # linked in, LZMA-compressed: an estimated 6-8 MB (some 20 MB
+          # uncompressed). An NSIS installer without that payload is well
+          # under 1 MB. The floor is deliberately low until releases show the
+          # real size; raise it then.
+          size=$(wc -c <"artifacts/windows/$exe" | tr -d ' ')
+          if [ "$size" -lt $((5 * 1024 * 1024)) ]; then
+            echo "::error::$exe has only $size bytes, too small for a Voxy installer, so the release stays a draft."
+            exit 1
+          fi
+          if [ "$(head -c 2 "artifacts/windows/$exe")" != "MZ" ]; then
+            echo "::error::$exe is not a Windows program (no MZ header), so the release stays a draft."
+            exit 1
+          fi
+          cp "artifacts/windows/$exe" upload/
 
           archive="upload/$app_tgz"
           tar -tzf "$archive" >"$RUNNER_TEMP/files.txt"
