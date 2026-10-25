@@ -90,6 +90,8 @@ src-tauri/
     model_smoke.rs  end-to-end model check without the UI
   windows/
     app.manifest    Common Controls v6 manifest, embedded by link.exe into every MSVC binary (test binaries too)
+    nsis-sidebar.bmp, nsis-header.bmp   installer wizard art (Welcome/Finish page sidebar, page header)
+    installer-art.py  draws those two bitmaps from icons/icon.png (Pillow)
   build.rs          IPC ACL manifest; for MSVC targets: static C runtime by default and the manifest above
   tauri.conf.json   app config (product name, bundle identifier, minimum macOS version, NSIS installer); the Settings window entry is the macOS one
   Info.plist        microphone usage text; menu-bar-only app (no Dock icon)
