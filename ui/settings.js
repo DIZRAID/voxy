@@ -6,7 +6,11 @@
 
 // ================================================================= bridge
 const IS_TAURI = !!window.__TAURI__;
-const IS_MAC = navigator.platform.toUpperCase().includes("MAC");
+// Платформу определяет boot.js (<html data-platform>; в браузерном превью
+// её можно выбрать ?platform=win|mac). navigator — запасной путь, если
+// атрибута нет.
+const PLATFORM = document.documentElement.dataset.platform;
+const IS_MAC = PLATFORM ? PLATFORM === "mac" : navigator.platform.toUpperCase().includes("MAC");
 // Вне Tauri — демо с моками и имитацией событий (см. createDemo в конце).
 const DEMO = IS_TAURI ? null : createDemo();
 const invoke = IS_TAURI ? window.__TAURI__.core.invoke : DEMO.invoke;
@@ -115,11 +119,40 @@ function keyDisplay(name) {
   return name;
 }
 
-// «⌘ Right Command» → колпачок «⌘» + «Right Command»; без символа — «⌨».
+// Windows: символов у модификаторов нет, на колпачке — короткое имя, как
+// на клавиатуре («Ctrl» + «Right Ctrl», «Win» + «Right Win»); у F-клавиш и
+// прочих — «⌨» + имя.
+const WIN_CAPS = {
+  ControlRight: "Ctrl",
+  ControlLeft: "Ctrl",
+  Alt: "Alt",
+  AltGr: "Alt",
+  MetaRight: "Win",
+  MetaLeft: "Win",
+  ShiftRight: "Shift",
+  ShiftLeft: "Shift",
+  CapsLock: "⇪",
+};
+
+// macOS: «⌘ Right Command» → колпачок «⌘» + «Right Command»; без символа — «⌨».
 function splitKey(name) {
   const text = keyDisplay(name);
+  if (!IS_MAC) return { cap: WIN_CAPS[name] || "⌨", label: text };
   const m = /^([⌘⌃⌥⇧⇪])\s*(.*)$/.exec(text);
   return m ? { cap: m[1], label: m[2] } : { cap: "⌨", label: text };
+}
+
+// Windows: одиночное нажатие Win открывает меню «Пуск» (хук Voxy только
+// слушает и подавить его не может), а левый Alt приложения используют для
+// меню. На macOS таких оговорок нет.
+const HOTKEY_SUB = "Hold to dictate";
+function hotkeyWarning(name) {
+  if (IS_MAC) return null;
+  if (/^Meta(Left|Right)$/.test(name)) {
+    return "Tapping Win alone opens the Start menu — Right Ctrl or an F-key works better";
+  }
+  if (name === "Alt") return "Apps use Left Alt for menus";
+  return null;
 }
 
 // ================================================================== menus
@@ -271,6 +304,11 @@ function renderHotkey() {
     $("hk-cap").textContent = k.cap;
     $("hk-name").textContent = k.label;
   }
+  // словесный колпачок («Ctrl», «Shift» — только Windows) шире символа
+  $("hk-cap").classList.toggle("word", $("hk-cap").textContent.length > 1);
+  const warning = hotkeyWarning(settings ? settings.hotkey : DEFAULT_HOTKEY);
+  $("hk-sub").textContent = warning || HOTKEY_SUB;
+  $("hk-sub").classList.toggle("warn", !!warning);
   const btn = $("hk-btn");
   btn.textContent = capturing ? "Cancel" : "Change";
   const blocked = !capturing && permsMissing();
@@ -357,6 +395,13 @@ function bindSwitch(id, key) {
 }
 bindSwitch("sounds-toggle", "sounds");
 bindSwitch("autostart-toggle", "autostart");
+// Формулировки Windows (автозапуск — ключ Run в реестре, срабатывает при
+// входе в систему); предупреждение о клавише Win читается вместе с кнопкой.
+if (!IS_MAC) {
+  $("autostart-title").textContent = "Start with Windows";
+  $("autostart-sub").textContent = "Start Voxy when you sign in";
+  $("hk-btn").setAttribute("aria-describedby", "hk-sub");
+}
 
 // ============================================================== recording
 const MODES = [
@@ -1179,13 +1224,13 @@ $("history-clear").addEventListener("click", async () => {
 });
 
 // Как в макете — только символ клавиши («Hold ⌘ and speak»); у клавиш без
-// символа (Fn, F5, клавиши Windows) — её имя.
+// символа (Fn, F5) и на Windows — её полное имя («Hold Right Ctrl and speak»).
 function renderEmptyHint() {
   const verb = settings && settings.mode === "toggle" ? "Press" : "Hold";
   let key = "the hotkey";
   if (settings) {
     const k = splitKey(settings.hotkey);
-    key = k.cap === "⌨" ? k.label : k.cap;
+    key = IS_MAC && k.cap !== "⌨" ? k.cap : k.label;
   }
   $("empty-sub").textContent = `${verb} ${key} and speak — entries will appear here`;
 }
@@ -1513,11 +1558,13 @@ renderHotkey(); // имя клавиши по умолчанию для плат
 // Превью без Tauri: `python3 -m http.server 4173 --directory ui`, затем
 // http://localhost:4173/settings.html. Команды имитируют бэкенд (ошибки —
 // строками, как у Tauri), события приходят асинхронно. Параметры адреса:
-// ?tab=model|history|record  ?perm=0|acc|im (каких разрешений нет).
+// ?tab=model|history|record  ?perm=0|acc|im (каких разрешений нет)
+// ?platform=win|mac  ?backdrop=mica|opaque (Windows; читает boot.js)
+// ?hotkey=<имя клавиши> (например MetaRight — предупреждение Windows о Win).
 // Отладка из консоли: window.__settingsDebug.
 function createDemo() {
   const q = new URLSearchParams(location.search);
-  const mac = navigator.platform.toUpperCase().includes("MAC");
+  const mac = IS_MAC;
   const handlers = {};
   const emit = (event, payload) =>
     (handlers[event] || []).slice().forEach((fn) => {
@@ -1533,7 +1580,7 @@ function createDemo() {
   const now = Date.now();
 
   const settings = {
-    hotkey: mac ? "MetaRight" : "ControlRight",
+    hotkey: q.get("hotkey") || (mac ? "MetaRight" : "ControlRight"),
     mode: "ptt",
     min_duration_ms: 300,
     max_record_s: 120,
@@ -1706,7 +1753,7 @@ function createDemo() {
       const keep = { hotkey: settings.hotkey, active_model: settings.active_model };
       Object.assign(settings, clone(newSettings), keep);
     },
-    list_mics: () => ["MacBook Pro Microphone", "AirPods Pro"],
+    list_mics: () => (mac ? ["MacBook Pro Microphone", "AirPods Pro"] : ["Microphone Array (Realtek(R) Audio)", "Headset (Jabra Evolve2 65)"]),
     get_history: () => history,
     clear_history: () => {
       history.length = 0;
@@ -1819,11 +1866,29 @@ function createDemo() {
   });
   win.parentNode.insertBefore(stage, win);
   stage.append(win);
-  const lights = document.createElement("div");
-  lights.className = "demo-lights";
-  lights.setAttribute("aria-hidden", "true");
-  lights.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
-  win.append(lights);
+  if (mac) {
+    const lights = document.createElement("div");
+    lights.className = "demo-lights";
+    lights.setAttribute("aria-hidden", "true");
+    lights.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+    win.append(lights);
+  } else {
+    // Windows: нативная строка заголовка лежит НАД страницей 680×500 (в
+    // приложении её рисует система) — здесь нарисованная заглушка.
+    const caption = document.createElement("div");
+    caption.className = "demo-caption";
+    caption.setAttribute("aria-hidden", "true");
+    const title = document.createElement("span");
+    title.className = "demo-caption-title";
+    title.textContent = "Voxy";
+    caption.append(title);
+    for (const kind of ["min", "max", "close"]) {
+      const b = document.createElement("span");
+      b.className = `demo-caption-btn ${kind}`;
+      caption.append(b);
+    }
+    stage.insertBefore(caption, win);
+  }
 
   window.__settingsDebug = {
     emit,
