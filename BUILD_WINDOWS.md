@@ -39,10 +39,10 @@ You don't need Node.js or npm, because the UI is plain static files in `ui/`.
 
 You don't need to set any environment variables either. Plain `cargo build`
 and `cargo test` work as well as `cargo tauri`: on MSVC, `src-tauri/build.rs`
-links the C runtime statically by default (`STATIC_VCRUNTIME=true`, which
-`cargo tauri` sets too) and embeds the Common Controls v6 manifest
-(`src-tauri/windows/app.manifest`) into every binary, unit-test binaries
-included.
+links the C runtime statically (it asks tauri-build for it; the old
+`STATIC_VCRUNTIME` variable is deprecated and not needed) and embeds the
+Common Controls v6 manifest (`src-tauri/windows/app.manifest`) into every
+binary, unit-test binaries included.
 
 The first build needs internet access. Besides the Rust crates that Cargo
 fetches, it downloads two more things:

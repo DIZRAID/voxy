@@ -21,7 +21,7 @@ Push-to-talk dictation: hold a hotkey, speak, release, and the recognized text i
 - `output.rs` (clipboard + synthetic Ctrl+V/Cmd+V), `platform.rs` (platform seam: sounds, permissions, clipboard generation/secret detection, elevation check), `store.rs` (settings/history JSON, atomic writes).
 - `app_commands.rs` + `capabilities/*.json`: per-window IPC ACL.
 - `ui/`: `settings.*` (Settings window), `island.*` (island), `boot.js` (platform/backdrop attributes before first paint).
-- `src-tauri/build.rs`: IPC ACL manifest; on MSVC defaults `STATIC_VCRUNTIME=true` and embeds `src-tauri/windows/app.manifest` (Common Controls v6) into every binary via link.exe, so unit tests run on Windows.
+- `src-tauri/build.rs`: IPC ACL manifest; on MSVC requests the static VC++ runtime (`WindowsAttributes::static_vc_runtime(true)`; the `STATIC_VCRUNTIME` env var is deprecated since tauri-build 2.7) and embeds `src-tauri/windows/app.manifest` (Common Controls v6) into every binary via link.exe, so unit tests run on Windows.
 - `.github/workflows/ci.yml` (debug build + unit tests on macOS and Windows, experimental Windows smoke run and `install.ps1` check), `release.yml` (tag `vX.Y.Z` → bundles → GitHub release). `.github/scripts/fetch-sherpa-onnx.sh` + `src-tauri/sherpa-onnx.sha256` pin the native libraries.
 - `install.sh` (macOS one-command installer), `install.ps1` (Windows one-command installer).
 - `scripts/cross-check.sh`: cross type-check for Windows/macOS from Linux (see below).

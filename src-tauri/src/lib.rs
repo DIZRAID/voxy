@@ -477,6 +477,8 @@ fn windows_settings_config(mut config: WindowConfig, mica: bool) -> WindowConfig
             state: None,
             radius: None,
             color: None,
+            // Только Liquid Glass на macOS 27+; к Mica отношения не имеет.
+            interactive: false,
         });
         config.background_color = None;
         config.url = WebviewUrl::App("settings.html?backdrop=mica".into());
