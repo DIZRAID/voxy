@@ -3,9 +3,17 @@ const IS_TAURI = !!window.__TAURI__;
 const { listen } = IS_TAURI ? window.__TAURI__.event : { listen: () => {} };
 const invoke = IS_TAURI ? window.__TAURI__.core.invoke : async () => {};
 
-// На Windows нет выреза камеры — в покое пилюлю прячем целиком.
-document.documentElement.dataset.platform =
-  navigator.platform.toUpperCase().includes("MAC") ? "mac" : "win";
+// На Windows нет выреза камеры: пилюля в покое скрыта целиком, а в работе
+// всплывает внизу над панелью задач (island.css, блок Windows).
+// В Tauri платформа — из navigator ("Win32" в WebView2); в браузерном
+// превью её выбирает ?platform=win|mac (как boot.js у настроек), без
+// параметра — macOS везде, кроме браузера на Windows.
+document.documentElement.dataset.platform = (() => {
+  if (IS_TAURI) return navigator.platform.toUpperCase().includes("MAC") ? "mac" : "win";
+  const p = new URLSearchParams(location.search).get("platform");
+  if (p === "win" || p === "mac") return p;
+  return /^WIN/i.test(navigator.platform) ? "win" : "mac";
+})();
 
 // Геометрия реального выреза из Rust: пилюля в покое рисуется РОВНО по
 // физическому вырезу (как Alcove), а не фиксированным размером.
@@ -110,17 +118,46 @@ function stopTimer() {
   timerTimeout = null;
 }
 
+// Ширина, при которой сообщение об ошибке помещается целиком: текст плюс
+// поля строки и рамка пилюли. island.css решает, что с ней делать: на
+// Windows пилюля ошибки по тексту (в пределах окна), на macOS ширина от
+// выреза, как раньше, и шире — только если иначе текст обрезался бы.
+// appeared: пилюля только что вышла из display: none (Windows, из покоя).
+// Замер уже показал её с прежней --err-fit, и новая ширина «доезжала» бы
+// анимацией — этот переход ширины сразу завершаем, подъём и проявление
+// идут своим чередом. На macOS пилюля не скрывается, appeared всегда false.
+function fitError(appeared) {
+  const row = getComputedStyle(errorEl.parentElement);
+  const box = getComputedStyle(pill);
+  const need =
+    errorEl.scrollWidth +
+    parseFloat(row.paddingLeft) + parseFloat(row.paddingRight) +
+    parseFloat(box.borderLeftWidth) + parseFloat(box.borderRightWidth);
+  // +2: scrollWidth округлён до целого, дробный остаток дал бы «…»
+  pill.style.setProperty("--err-fit", `${Math.ceil(need) + 2}px`);
+  if (appeared) {
+    void getComputedStyle(pill).width; // переход ширины создаётся здесь
+    for (const a of pill.getAnimations()) {
+      if (a.transitionProperty === "width") a.finish();
+    }
+  }
+}
+
 function disarmCancel() {
   clearTimeout(cancelArmTimeout);
   pill.classList.remove("cancel-armed");
 }
 
 function setState(state, message, maxS) {
+  const appeared = state === "error" && getComputedStyle(pill).display === "none";
   clearTimeout(collapseTimeout);
   clearTimeout(processingTimeout);
   disarmCancel();
   if (state === "cancelled") state = "idle";
   island.dataset.state = state;
+  // Последнее активное состояние: на Windows пилюля уходит вниз вместе со
+  // своим содержимым, а не пустой (island.css, блок Windows).
+  if (state !== "idle") island.dataset.content = state;
 
   if (state === "recording") {
     maxSeconds = maxS || 0;
@@ -137,6 +174,7 @@ function setState(state, message, maxS) {
   }
   if (state === "error") {
     errorEl.textContent = message || "Something went wrong";
+    fitError(appeared);
     collapseTimeout = setTimeout(() => setState("idle"), 2400);
   }
 }

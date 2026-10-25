@@ -1,6 +1,8 @@
 /* Dynamic Island по хендоффу (секция 3a): тонкая пилюля, «выползающая»
    из выреза. Idle неотличим от выреза; recording — таймер слева,
-   волна справа. Морф размеров: 450ms cubic-bezier(.32,1.2,.55,1). */
+   волна справа. Морф размеров: 450ms cubic-bezier(.32,1.2,.55,1).
+   Windows (выреза нет) — плавающая пилюля внизу над панелью задач,
+   отдельный блок в конце файла. */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -9,7 +11,7 @@ html, body {
   overflow: hidden;
   width: 100%;
   height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", sans-serif;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -75,9 +77,8 @@ html, body {
 /* До прихода метрик размера не знаем — не показываем ничего. */
 :root:not([data-notch]) .pill { opacity: 0; }
 
-/* Windows и экраны без выреза: в покое пилюля полностью скрыта,
-   при записи выезжает сверху. */
-:root[data-platform="win"] [data-state="idle"] .pill,
+/* Mac без выреза: в покое пилюля полностью скрыта, при записи выезжает
+   сверху (Windows — свой блок в конце файла). */
 :root[data-notch="no"] [data-state="idle"] .pill {
   opacity: 0;
   transform: translateY(-110%);
@@ -108,8 +109,10 @@ html, body {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
 }
 
+/* Ширина от выреза; шире — только когда сообщение иначе обрезалось бы
+   (--err-fit из island.js, не больше 480 px: окно 520 px минус тень). */
 [data-state="error"] .pill {
-  width: calc(var(--notch-w, 190px) + 110px);
+  width: max(calc(var(--notch-w, 190px) + 110px), min(var(--err-fit, 0px), 480px));
 }
 
 /* --- содержимое состояний (одно активно за раз) --- */
@@ -125,7 +128,7 @@ html, body {
 }
 
 .timer {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
   font-size: 11px;
   color: #c9c9ff;
   font-variant-numeric: tabular-nums;
@@ -220,4 +223,163 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- Windows */
+/* Контракт C5: на Windows выреза нет, поэтому островок — отдельная
+   плавающая пилюля внизу по центру, над панелью задач (как всплывающее
+   окно громкости Windows 11), без форм «из выреза». Rust ставит нижний
+   край окна 520×150 на нижний край рабочей области (= верх панели задач),
+   здесь пилюля прижата к низу окна с зазором --win-gap. Тень окна выключена
+   (shadow(false)), поэтому мягкие тени пилюли и свечения целиком лежат в
+   окне: вниз они уходят не дальше зазора, вверху места хватает (150 px окна
+   против 40 px пилюли). Все правила — под :root[data-platform="win"] и с
+   #island, чтобы перебить общие правила выше; macOS их не видит.
+
+   Движение:
+   - появление (из покоя): подъём снизу на высоту пилюли плюс зазор,
+     проявление и масштаб 0.96 → 1, 260 мс, мягкое торможение (перелёт
+     меньше 1 %);
+   - смена состояний: ширина от нижней опоры, 300 мс, без перелёта;
+   - уход (в покой): опускание и растворение быстрее, 180 мс, ускорение.
+   В покое пилюля display: none; появление описывает @starting-style, уход
+   держит display до конца анимации (transition-behavior: allow-discrete,
+   Chromium 117+, WebView2 обновляется сам). Так ширина при появлении сразу
+   целевая, а не «доезжает» из покоя. Без этой поддержки пилюля просто
+   появляется и исчезает. */
+:root[data-platform="win"] {
+  --win-h: 40px;
+  --win-gap: 12px;
+  --win-drop: calc(var(--win-h) + var(--win-gap));
+  --win-rec-w: 136px;
+  --win-arm-w: 184px;
+  --win-proc-w: 156px;
+  --win-err-max: 480px; /* окно 520 px минус место под тень */
+  --win-in: 260ms cubic-bezier(0.3, 1.15, 0.6, 1);
+  --win-fade-in: 200ms cubic-bezier(0, 0, 0.2, 1);
+  --win-out: 180ms cubic-bezier(0.4, 0, 1, 1);
+  --win-morph: 300ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+:root[data-platform="win"] #island {
+  align-items: flex-end;
+  padding-bottom: var(--win-gap);
+}
+
+/* Покой и уход. Ширина держится до конца ухода и меняется уже невидимой. */
+:root[data-platform="win"] #island .pill {
+  display: none;
+  width: var(--win-rec-w);
+  height: var(--win-h);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: calc(var(--win-h) / 2);
+  background: rgba(24, 21, 36, 0.94);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), 0 0 20px rgba(0, 0, 0, 0.16);
+  opacity: 0;
+  transform: translateY(var(--win-drop)) scale(0.96);
+  transform-origin: 50% 100%;
+  transition: opacity var(--win-out), transform var(--win-out), display var(--win-out), width 0s linear 180ms;
+  transition-behavior: allow-discrete;
+}
+
+/* Активные состояния и появление. */
+:root[data-platform="win"] #island:is([data-state="recording"], [data-state="processing"], [data-state="error"]) .pill {
+  display: flex;
+  opacity: 1;
+  transform: none;
+  transition: opacity var(--win-fade-in), transform var(--win-in), display var(--win-in), width var(--win-morph);
+  transition-behavior: allow-discrete;
+}
+@starting-style {
+  :root[data-platform="win"] #island:is([data-state="recording"], [data-state="processing"], [data-state="error"]) .pill {
+    opacity: 0;
+    transform: translateY(var(--win-drop)) scale(0.96);
+  }
+}
+:root[data-platform="win"] #island[data-state="recording"] .pill.cancel-armed { width: var(--win-arm-w); }
+:root[data-platform="win"] #island[data-state="processing"] .pill { width: var(--win-proc-w); }
+:root[data-platform="win"] #island[data-state="error"] .pill {
+  /* по тексту (--err-fit из island.js), от ширины «Transcribing…» */
+  width: clamp(var(--win-proc-w), var(--err-fit, 240px), var(--win-err-max));
+}
+
+/* Свечение: обнимает пилюлю и уходит вверх, а не вниз из выреза; тише,
+   чем на macOS. Поднимается и опускается вместе с пилюлей; яркость, как и
+   там, задаёт голос (opacity из island.js). */
+:root[data-platform="win"] #island .glow {
+  display: none;
+  top: auto;
+  bottom: var(--win-gap);
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: var(--win-rec-w);
+  height: var(--win-h);
+  border-radius: calc(var(--win-h) / 2);
+  box-shadow: 0 -6px 22px rgba(125, 125, 242, 0.4), 0 0 8px rgba(125, 125, 242, 0.24);
+  transform: translateY(var(--win-drop)) scale(0.96);
+  transform-origin: 50% 100%;
+  transition: opacity 0.15s linear, transform var(--win-out), display var(--win-out), width 0s linear 180ms;
+  transition-behavior: allow-discrete;
+}
+:root[data-platform="win"] #island:is([data-state="recording"], [data-state="processing"], [data-state="error"]) .glow {
+  display: block;
+  transform: none;
+  transition: opacity 0.15s linear, transform var(--win-in), display var(--win-in), width var(--win-morph);
+  transition-behavior: allow-discrete;
+}
+@starting-style {
+  :root[data-platform="win"] #island:is([data-state="recording"], [data-state="processing"], [data-state="error"]) .glow {
+    transform: translateY(var(--win-drop)) scale(0.96);
+  }
+}
+:root[data-platform="win"] #island:has(.pill.cancel-armed) .glow { width: var(--win-arm-w); }
+
+/* Содержимое: одна строка по центру пилюли (на macOS Transcribing/ошибка
+   лежат в «подбородке» под вырезом). Строку выбирает data-content —
+   последнее активное состояние (island.js), поэтому при уходе в покой
+   пилюля опускается со своим содержимым, а не пустой. Шрифт чуть крупнее:
+   11 px Segoe UI на Windows мелковат. */
+:root[data-platform="win"] #island[data-content="recording"] .rec-row,
+:root[data-platform="win"] #island[data-content="processing"] .proc-row,
+:root[data-platform="win"] #island[data-content="error"] .error-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: static;
+  width: 100%;
+  height: auto;
+  padding: 0 16px;
+}
+:root[data-platform="win"] #island[data-content="recording"] .rec-row {
+  justify-content: space-between;
+  gap: 14px;
+}
+:root[data-platform="win"] #island[data-content="processing"] .proc-row { gap: 8px; }
+:root[data-platform="win"] .timer,
+:root[data-platform="win"] .proc-label,
+:root[data-platform="win"] .error-label,
+:root[data-platform="win"] .cancel-chip { font-size: 12px; }
+
+/* Меньше движения: только проявление и растворение, без сдвига, масштаба
+   и анимации ширины (при уходе ширина так же держится до конца). */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-platform="win"] #island .pill,
+  :root[data-platform="win"] #island .glow {
+    transform: none;
+    transition: opacity 200ms ease, display 200ms, width 0s linear 200ms;
+    transition-behavior: allow-discrete;
+  }
+  :root[data-platform="win"] #island:is([data-state="recording"], [data-state="processing"], [data-state="error"]) .pill,
+  :root[data-platform="win"] #island:is([data-state="recording"], [data-state="processing"], [data-state="error"]) .glow {
+    transform: none;
+    transition: opacity 200ms ease, display 200ms;
+    transition-behavior: allow-discrete;
+  }
+  @starting-style {
+    :root[data-platform="win"] #island:is([data-state="recording"], [data-state="processing"], [data-state="error"]) .pill,
+    :root[data-platform="win"] #island:is([data-state="recording"], [data-state="processing"], [data-state="error"]) .glow {
+      transform: none;
+    }
+  }
 }

@@ -325,11 +325,14 @@ impl Worker {
             Ok(()) => island::set_state(&self.app, "idle", None),
             Err(e) => {
                 log::error!("вставка: {e:#}");
-                island::set_state(
-                    &self.app,
-                    "error",
-                    Some("Paste failed — text kept in clipboard".into()),
-                );
+                // Окно администратора (Windows, UIPI) — отдельная подсказка:
+                // общая «Paste failed» не объясняет, почему вставка не прошла.
+                let message = if e.downcast_ref::<output::PasteBlocked>().is_some() {
+                    "Paste blocked by an admin app — text kept in clipboard"
+                } else {
+                    "Paste failed — text kept in clipboard"
+                };
+                island::set_state(&self.app, "error", Some(message.into()));
             }
         }
 

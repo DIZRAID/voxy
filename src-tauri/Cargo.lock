@@ -5166,6 +5166,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "ureq",
  "windows-sys 0.59.0",
+ "windows-version",
 ]
 
 [[package]]

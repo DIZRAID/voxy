@@ -1,5 +1,7 @@
-# Build Voxy on macOS (Apple Silicon) and Windows (x64) and run its unit tests.
-# On Windows the unit tests are only compiled for now (see "Unit tests").
+# Build Voxy on macOS (Apple Silicon) and Windows (x64) and run its unit tests
+# on both. On Windows an experimental smoke run then starts the app for 25 s,
+# and a separate experimental job checks install.ps1 (the Windows one-command
+# installer). Experimental steps do not fail the workflow yet.
 #
 # Kept cheap on purpose: the repository is private, and GitHub bills macOS
 # runner minutes at 10x and Windows at 2x. So: debug profile only (the release
@@ -14,12 +16,14 @@ on:
     paths:
       - "src-tauri/**"
       - "ui/**"
+      - "install.ps1"
       - ".github/workflows/ci.yml"
       - ".github/scripts/fetch-sherpa-onnx.sh"
   pull_request:
     paths:
       - "src-tauri/**"
       - "ui/**"
+      - "install.ps1"
       - ".github/workflows/ci.yml"
       - ".github/scripts/fetch-sherpa-onnx.sh"
   workflow_dispatch:
@@ -36,10 +40,9 @@ env:
   RUST_BACKTRACE: 1
   # No debug info in CI builds: faster compile and link, much smaller cache.
   CARGO_PROFILE_DEV_DEBUG: 0
-  # Windows: link the static C runtime like `cargo tauri dev/build` do. The
-  # sherpa-onnx libraries are built with /MT; without this the linker mixes
-  # CRTs (LNK4098 on LIBCMT). Ignored on macOS.
-  STATIC_VCRUNTIME: "true"
+  # STATIC_VCRUNTIME is not set here on purpose: on Windows (MSVC) build.rs
+  # defaults it to true (the sherpa-onnx libraries are built with /MT), so CI
+  # builds exactly what a plain `cargo build` / `cargo test` builds there.
 
 jobs:
   build:
@@ -56,13 +59,14 @@ jobs:
             timeout: 30
             sherpa_archive: osx-arm64-static-lib
             test_args: ""
-          # The Windows port has never been compiled before this job.
           - name: Windows (x64)
             os: windows-latest
             timeout: 45
             sherpa_archive: win-x64-static-MT-Release-lib
-            # Build and link the test binary without running it.
-            test_args: --no-run
+            # The unit tests run here too (see "Unit tests"). Should the test
+            # binary ever fail to load again (0xC0000139), "--no-run" only
+            # builds and links it.
+            test_args: ""
     defaults:
       run:
         working-directory: src-tauri
@@ -102,32 +106,182 @@ jobs:
         run: bash ../.github/scripts/fetch-sherpa-onnx.sh "$SHERPA_ARCHIVE"
 
       - name: Build (debug)
+        id: build
         run: cargo build --locked
 
-      # Tests marked #[ignore] need the network and are skipped here.
-      # On Windows the test binary is only compiled and linked (--no-run).
-      # tauri-build embeds the Common Controls v6 manifest in the app binary
-      # only, and without it a test binary that imports comctl32 functions
-      # through tao/muda/wry dies at load with 0xC0000139 before any test runs
-      # (tauri-apps/tauri#13419). Running them on Windows needs build.rs to
-      # embed that manifest in test binaries too.
+      # Tests marked #[ignore] need the network and are skipped here. The
+      # output goes to test-output.log as well, for the summary.
+      # Windows: tauri-build links the Common Controls v6 manifest into the
+      # app binary only, and a test binary without it dies at load with
+      # 0xC0000139 before any test runs (it imports TaskDialogIndirect through
+      # tao/muda; tauri-apps/tauri#13419). build.rs therefore has link.exe
+      # embed src-tauri/windows/app.manifest into every binary, test binaries
+      # included.
       - name: Unit tests
-        run: cargo test --locked --lib ${{ matrix.test_args }}
-
-      - name: Summary
+        id: tests
         shell: bash
         env:
           TEST_ARGS: ${{ matrix.test_args }}
+        # $TEST_ARGS unquoted on purpose: empty or a single flag.
+        run: cargo test --locked --lib $TEST_ARGS 2>&1 | tee test-output.log
+
+      # Experimental, does not fail the job: the first signal that Voxy
+      # actually starts on Windows. Runs the debug build (a console program,
+      # so VOXY_LOG_STDERR=1 sends the log to the redirected stderr) for 25 s
+      # and looks for two log lines: hotkey.rs logs one containing
+      # "хук установлен" once the keyboard hook is installed, and lib.rs logs
+      # "startup complete" once the tray icon and the island exist. GitHub's
+      # Windows runners have an interactive desktop and WebView2. The first
+      # launch also starts downloading the default model; it is killed with
+      # the app after 25 s, which is harmless on a throwaway runner. Runs
+      # whenever the build succeeded, even after failed unit tests: it does
+      # not depend on them. Make it blocking once it is green on main.
+      - name: Smoke run (Windows, experimental)
+        id: smoke
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VOXY_LOG_STDERR: "1"
+          RUST_LOG: info
+        run: |
+          status=0
+          # Git Bash's coreutils timeout, by path: Windows has an unrelated
+          # timeout.exe ("wait N seconds") in System32.
+          /usr/bin/timeout 25 ./target/debug/voxy.exe >smoke.log 2>&1 || status=$?
+          # A copy that outlived timeout (or its WebView2 children) must not
+          # keep files open for the cache step. //F: Git Bash would turn /F
+          # into a path.
+          taskkill //F //T //IM voxy.exe >/dev/null 2>&1 || true
+          echo "voxy.exe exit status: $status (124: still running after 25 s, as expected)"
+          echo "----- smoke.log -----"
+          cat smoke.log
+          echo "---------------------"
+          ok=1
+          if [ "$status" != 124 ]; then
+            echo "::warning::Smoke run: voxy.exe exited after less than 25 s (status $status)"
+            ok=0
+          fi
+          # Byte-wise match (LC_ALL=C): the log is UTF-8, whatever the locale.
+          for marker in "хук установлен" "startup complete"; do
+            if LC_ALL=C grep -qF "$marker" smoke.log; then
+              echo "found: $marker"
+            else
+              echo "::warning::Smoke run: the log has no line with \"$marker\""
+              ok=0
+            fi
+          done
+          [ "$ok" = 1 ]
+
+      - name: Summary
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        env:
+          NAME: ${{ matrix.name }}
+          TEST_ARGS: ${{ matrix.test_args }}
+          TESTS: ${{ steps.tests.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
         run: |
           bin=target/debug/voxy
           if [ "$RUNNER_OS" = "Windows" ]; then bin="$bin.exe"; fi
           ls -l "$bin"
-          if [ "$TEST_ARGS" = "--no-run" ]; then
+          # libtest's last "test result: ok. N passed; ..." line, without colour
+          # codes ($'...' puts a real ESC into the expression: BSD sed on macOS
+          # knows no \x1b).
+          result=$(grep -h '^test result:' test-output.log 2>/dev/null | tail -n 1 | sed $'s/\x1b\\[[0-9;]*m//g' || true)
+          if [ "$TESTS" = "success" ] && [ "$TEST_ARGS" = "--no-run" ]; then
             tests="unit tests compiled, not run"
+          elif [ "$TESTS" = "success" ]; then
+            tests="unit tests passed (${result:-no result line})"
           else
-            tests="unit tests passed"
+            tests="unit tests: $TESTS${result:+ ($result)}"
           fi
           {
-            echo "### ${{ matrix.name }}"
+            echo "### $NAME"
             echo "Debug build linked (\`src-tauri/$bin\`, $(du -h "$bin" | cut -f1)); $tests."
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              echo
+              echo "Smoke run (experimental): $SMOKE."
+              if [ -f smoke.log ]; then
+                echo '```'
+                LC_ALL=C grep -F -e "хук установлен" -e "startup complete" smoke.log || echo "(no marker lines in smoke.log)"
+                echo '```'
+              fi
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # install.ps1, checked without installing anything, under Windows
+  # PowerShell 5.1 (what `irm ... | iex` runs on a stock Windows) and
+  # PowerShell 7: it must stay ASCII (5.1 reads a script without a BOM in the
+  # ANSI code page), parse, refuse options that do not go together, refuse a
+  # local "installer" that is not a Windows program before running anything,
+  # keep the PowerShell session alive when it fails under iex, and succeed as
+  # a no-op uninstall on a runner where Voxy is not installed. Not on pull
+  # requests, to keep them cheap. Experimental: continue-on-error until it is
+  # green on main.
+  installer-script:
+    name: install.ps1 (Windows)
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check install.ps1 with Windows PowerShell 5.1 and PowerShell 7
+        id: check
+        shell: pwsh
+        run: |
+          # The checks, written to a file and run once by each PowerShell.
+          $checks = @'
+          $ErrorActionPreference = 'Continue'
+          $installer = Join-Path $env:GITHUB_WORKSPACE 'install.ps1'
+          $engine = (Get-Process -Id $PID).Path
+          $name = "PowerShell $($PSVersionTable.PSVersion)"
+          $failures = New-Object System.Collections.Generic.List[string]
+          function Run([string[]]$Arguments) {
+              $out = & $engine -NoProfile -NonInteractive -ExecutionPolicy Bypass @Arguments 2>&1 | Out-String
+              [pscustomobject]@{ Code = $LASTEXITCODE; Out = $out }
+          }
+          function Expect([string]$What, [bool]$Ok, [string]$Out) {
+              if ($Ok) { Write-Output "ok: $What" } else { $failures.Add($What); Write-Output "FAILED: $What"; Write-Output $Out }
+          }
+
+          $nonAscii = @([IO.File]::ReadAllBytes($installer) | Where-Object { $_ -gt 0x7F }).Count
+          Expect 'ASCII only' ($nonAscii -eq 0) "$nonAscii non-ASCII bytes"
+          $tokens = $null; $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$tokens, [ref]$errors)
+          Expect "parses under $name" (@($errors).Count -eq 0) (($errors | ForEach-Object { "line $($_.Extent.StartLineNumber): $($_.Message)" }) -join "`n")
+
+          $r = Run @('-File', $installer, '-Uninstall', '-KeepData')
+          Expect '-Uninstall -KeepData without Voxy: exit 0, "not installed"' ($r.Code -eq 0 -and $r.Out -match 'not installed') $r.Out
+          $r = Run @('-File', $installer, '-Uninstall')
+          Expect '-Uninstall without Voxy: exit 0, nothing to remove' ($r.Code -eq 0 -and $r.Out -match 'nothing to remove') $r.Out
+          $r = Run @('-File', $installer, '-KeepData')
+          Expect '-KeepData alone: exit 2' ($r.Code -eq 2) $r.Out
+
+          $fake = Join-Path $env:RUNNER_TEMP 'not-an-installer.exe'
+          Set-Content -LiteralPath $fake -Value 'not a program'
+          $env:VOXY_INSTALLER = $fake
+          $r = Run @('-File', $installer, '-NoLaunch')
+          Expect 'a local installer that is not a Windows program: exit 1, nothing run' ($r.Code -eq 1 -and $r.Out -match 'not a Windows program' -and $r.Out -notmatch 'Installing Voxy') $r.Out
+          $r = Run @('-Command', "Get-Content -Raw -LiteralPath '$installer' | Invoke-Expression; 'still-running'")
+          Expect 'through iex, a failure keeps the session' ($r.Out -match 'not a Windows program' -and $r.Out -match 'still-running') $r.Out
+          Remove-Item Env:VOXY_INSTALLER
+          $r = Run @('-Command', "& ([scriptblock]::Create((Get-Content -Raw -LiteralPath '$installer'))) -Uninstall -KeepData; 'still-running'")
+          Expect 'script block form with -Uninstall -KeepData' ($r.Out -match 'not installed' -and $r.Out -match 'still-running') $r.Out
+
+          if ($failures.Count) { Write-Output "::error::install.ps1 under ${name}: $($failures -join '; ')"; exit 1 }
+          Write-Output "All install.ps1 checks passed under $name."
+          '@
+          $file = Join-Path $env:RUNNER_TEMP 'check-install-ps1.ps1'
+          Set-Content -LiteralPath $file -Value $checks -Encoding utf8
+          $failed = $false
+          foreach ($engine in 'powershell.exe', 'pwsh.exe') {
+            Write-Output "===== $engine"
+            & $engine -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $file
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
+          if ($failed) { exit 1 }

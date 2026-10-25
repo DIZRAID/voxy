@@ -3,7 +3,8 @@
    размытие делает нативный NSVisualEffectView (windowEffects в
    tauri.conf.json), CSS кладёт поверх лишь полупрозрачный тон и тонкие
    светлые кромки. backdrop-filter — только у маленьких выпадающих меню.
-   На Windows и в браузерном превью окно непрозрачное.
+   На Windows 11 под страницей системный Mica, на Windows 10 и в браузерном
+   превью окно непрозрачное (блок Windows в конце файла).
    Раскладка 680×500: боковая панель 168 px с навигацией и карточкой
    статуса модели, справа прокручиваемая страница с заголовком поверх.
    Анимации — только transform/opacity (плюс короткие переходы цвета и,
@@ -292,6 +293,8 @@ html.booting *, html.booting *::before, html.booting *::after { transition: none
 .row-info { min-width: 0; }
 .row-title { font-size: 13px; font-weight: 500; }
 .row-sub { margin-top: 2px; font-size: 11.5px; color: var(--sec); }
+/* предупреждение под строкой (Windows: хоткей на клавише Win или левом Alt) */
+.row-sub.warn { color: var(--warn); }
 .row-ctl { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .row-head.center { align-items: center; gap: 14px; }
@@ -388,6 +391,8 @@ html.booting *, html.booting *::before, html.booting *::after { transition: none
   font-size: 11px;
   box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(255, 255, 255, 0.12);
 }
+/* словесный колпачок Windows («Ctrl», «Shift», «Win») вместо символа */
+.hk-cap.word { padding: 0 5px; font-size: 10.5px; }
 
 /* -------------------------------------------------------------- dropdown */
 .dd { position: relative; flex-shrink: 0; }
@@ -926,11 +931,38 @@ html.booting *, html.booting *::before, html.booting *::after { transition: none
 .perm-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
 /* ----------------------------------------------------------------- Windows */
-/* Порт на Windows: стандартная рамка окна, стекла нет — непрозрачный фон,
-   без скругления и без места под «светофоры». */
-html[data-platform="win"]:not([data-demo]) .window { border-radius: 0; background: var(--opaque-bg); box-shadow: none; }
-html[data-platform="win"]:not([data-demo]) .drag-strip { display: none; }
-html[data-platform="win"]:not([data-demo]) .sidebar { padding-top: 12px; }
+/* Windows: нативная тёмная строка заголовка НАД страницей (её рисует
+   система: перетаскивание, кнопки, заголовок), страница 680×500 под ней.
+   Скругляет рамку окна Windows 11 сам DWM, поэтому у .window углы прямые и
+   своих кромок нет; места под «светофоры» не нужно — сверху теснее.
+   Подложка — контракт C1, data-backdrop из boot.js:
+   - mica (Windows 11): окно прозрачное, под страницей системный MicaDark,
+     поверх — тот же тон, что на macOS;
+   - opaque (Windows 10, а также без атрибута): непрозрачный --opaque-bg,
+     он же backgroundColor окна в Rust. */
+html[data-platform="win"] .window { border-radius: 0; box-shadow: none; }
+html[data-platform="win"] .drag-strip { display: none; }
+html[data-platform="win"] .sidebar { padding-top: 12px; }
+html[data-platform="win"] .title-bar { height: 50px; }
+html[data-platform="win"] .page-title { top: 14px; }
+html[data-platform="win"] .content {
+  padding-top: 56px;
+  scroll-padding-top: 54px;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, transparent 40px, #000 54px);
+  mask-image: linear-gradient(180deg, transparent 0, transparent 40px, #000 54px);
+}
+
+/* opaque */
+html[data-platform="win"]:not([data-backdrop="mica"]) .window { background: var(--opaque-bg); }
+
+/* Mica: html и body прозрачные, иначе материал не виден. Тон 0.5 —
+   НЕПРОВЕРЕННАЯ на устройстве отправная точка: MicaDark светлее и
+   нейтральнее нативного стекла macOS (серый слой поверх размытых обоев),
+   поэтому тон плотнее, чем 0.4 у macOS. Сверить на Windows 11 со светлыми
+   и тёмными обоями и при необходимости поднять (или опустить к 0.4). */
+html[data-platform="win"][data-backdrop="mica"]:not([data-demo]),
+html[data-platform="win"][data-backdrop="mica"]:not([data-demo]) body { background: transparent; }
+html[data-platform="win"][data-backdrop="mica"] .window { --glass-tint: 0.5; }
 
 /* ------------------------------------------------------- reduced motion */
 @media (prefers-reduced-motion: reduce) {
@@ -974,3 +1006,57 @@ html[data-demo] .window {
 .demo-lights span:nth-child(1) { background: #ff5f57; }
 .demo-lights span:nth-child(2) { background: #febc2e; }
 .demo-lights span:nth-child(3) { background: rgba(255, 255, 255, 0.18); box-shadow: none; }
+
+/* Превью Windows (?platform=win&backdrop=mica|opaque): нарисованная строка
+   заголовка над страницей; рамка Windows 11 (mica: скругление 8 px, Mica
+   имитирует размытие «обоев» под серым слоем MicaDark) или Windows 10
+   (opaque: прямые углы, сплошной фон). В приложении этого нет. */
+html[data-demo][data-platform="win"] .demo-stage { height: 612px; padding-top: 72px; }
+html[data-demo][data-platform="win"] .window {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+html[data-demo][data-platform="win"][data-backdrop="mica"] .window {
+  border-radius: 0 0 8px 8px;
+  background:
+    linear-gradient(rgba(14, 10, 26, var(--glass-tint)), rgba(14, 10, 26, var(--glass-tint))),
+    rgba(32, 32, 32, 0.7);
+}
+html[data-demo][data-platform="win"][data-backdrop="mica"] .window,
+html[data-demo][data-platform="win"][data-backdrop="mica"] .demo-caption {
+  -webkit-backdrop-filter: blur(60px) saturate(1.3);
+  backdrop-filter: blur(60px) saturate(1.3);
+}
+.demo-caption {
+  position: absolute;
+  left: 39px;
+  top: 39px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  width: 682px;
+  height: 33px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 0;
+  background: #202020;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+}
+html[data-backdrop="mica"] .demo-caption { border-radius: 8px 8px 0 0; background: rgba(32, 32, 32, 0.7); }
+.demo-caption-title { flex: 1; padding-left: 14px; }
+.demo-caption-btn { position: relative; width: 46px; height: 32px; }
+.demo-caption-btn::before,
+.demo-caption-btn::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+.demo-caption-btn.min::before { width: 10px; height: 1px; background: currentColor; }
+.demo-caption-btn.max::before { width: 10px; height: 10px; border: 1px solid currentColor; opacity: 0.35; }
+.demo-caption-btn.close::before,
+.demo-caption-btn.close::after { width: 14px; height: 1px; background: currentColor; }
+.demo-caption-btn.close::before { transform: translate(-50%, -50%) rotate(45deg); }
+.demo-caption-btn.close::after { transform: translate(-50%, -50%) rotate(-45deg); }

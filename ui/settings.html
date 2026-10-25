@@ -3,8 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <title>Voxy</title>
-  <!-- Платформа и демо-режим — до стилей, чтобы не было вспышки (boot.js). -->
+  <!-- WebView2 (Windows) asks for /favicon.ico when a page names no icon,
+       and Tauri logs every missing asset as an error. -->
+  <link rel="icon" href="favicon.png" />
+  <!-- Платформа, подложка и демо-режим — до стилей, чтобы не было вспышки (boot.js).
+       guard.js отменяет браузерные сочетания (F5, Ctrl+P…) и контекстное меню. -->
   <script src="boot.js"></script>
+  <script src="guard.js"></script>
   <link rel="stylesheet" href="settings.css" />
 </head>
 <body>
@@ -63,7 +68,7 @@
           <div class="row">
             <div class="row-info">
               <div class="row-title" id="hk-title">Hotkey</div>
-              <div class="row-sub">Hold to dictate</div>
+              <div class="row-sub" id="hk-sub">Hold to dictate</div>
             </div>
             <div class="row-ctl">
               <span class="hk-chip" id="hk-chip" aria-live="polite">
@@ -101,7 +106,7 @@
           <div class="row">
             <div class="row-info">
               <div class="row-title" id="autostart-title">Launch at login</div>
-              <div class="row-sub">Start Voxy automatically</div>
+              <div class="row-sub" id="autostart-sub">Start Voxy automatically</div>
             </div>
             <button class="switch" type="button" role="switch" id="autostart-toggle" aria-checked="false" aria-labelledby="autostart-title"><span class="switch-knob"></span></button>
           </div>

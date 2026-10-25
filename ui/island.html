@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <title>Voxy Island</title>
+  <!-- WebView2 (Windows) asks for /favicon.ico when a page names no icon,
+       and Tauri logs every missing asset as an error. -->
+  <link rel="icon" href="favicon.png" />
   <link rel="stylesheet" href="island.css" />
 </head>
 <body>
@@ -21,6 +24,9 @@
       <div class="error-row"><span class="error-label" id="error-label"></span></div>
     </div>
   </div>
+  <!-- guard.js: без контекстного меню WebView2 на пилюле (во время записи
+       она принимает клики — кнопка Cancel). -->
+  <script src="guard.js"></script>
   <script src="island.js"></script>
 </body>
 </html>

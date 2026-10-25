@@ -1,7 +1,8 @@
 //! Захват микрофона через cpal.
 //!
-//! Realtime-гигиена (урок инцидента с зависанием): аудио-колбэк CoreAudio
-//! не делает НИЧЕГО, кроме записи в буфер и атомиков — ни Tauri-IPC,
+//! Realtime-гигиена (урок инцидента с зависанием): аудио-колбэк (CoreAudio,
+//! WASAPI) не делает НИЧЕГО, кроме перевода сэмплов в моно f32, записи
+//! в буфер и атомиков — ни Tauri-IPC,
 //! ни каналов, ни логов. Уровень громкости на островок шлёт отдельный
 //! обычный поток-«насос» с частотой ~12 Гц: чаще островок всё равно
 //! не рисует (волна семплирует раз в 110 мс), а каждое событие — это
@@ -100,25 +101,30 @@ impl Recorder {
             shared.total_count.fetch_add(n, Ordering::Relaxed);
         };
 
-        let err_cb = |e| log::error!("ошибка аудиопотока: {e}");
+        let err_cb = |e: cpal::StreamError| log::error!("ошибка аудиопотока: {e}");
         let config: cpal::StreamConfig = supported.config();
+        let format = supported.sample_format();
+        log::info!(
+            "микрофон: {}, {sample_rate} Гц, каналов {channels}, формат {format:?}",
+            device.name().unwrap_or_else(|_| "?".into())
+        );
 
-        let stream = match supported.sample_format() {
-            cpal::SampleFormat::F32 => device.build_input_stream(
-                &config,
-                move |data: &[f32], _| on_chunk(downmix(data, channels)),
-                err_cb,
-                None,
-            )?,
-            cpal::SampleFormat::I16 => device.build_input_stream(
-                &config,
-                move |data: &[i16], _| {
-                    let f: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
-                    on_chunk(downmix(&f, channels))
-                },
-                err_cb,
-                None,
-            )?,
+        // Формат — тот, что устройство отдаёт по умолчанию (WASAPI в общем
+        // режиме: F32 или I16, у некоторых устройств I32/U8/I64; CoreAudio:
+        // обычно F32). Любой поток сводится к моно f32 одной и той же
+        // обобщённой функцией; неизвестный будущий формат — ошибка.
+        use cpal::SampleFormat as F;
+        let stream = match format {
+            F::F32 => build_stream::<f32>(&device, &config, channels, on_chunk, err_cb)?,
+            F::I16 => build_stream::<i16>(&device, &config, channels, on_chunk, err_cb)?,
+            F::I32 => build_stream::<i32>(&device, &config, channels, on_chunk, err_cb)?,
+            F::I64 => build_stream::<i64>(&device, &config, channels, on_chunk, err_cb)?,
+            F::I8 => build_stream::<i8>(&device, &config, channels, on_chunk, err_cb)?,
+            F::U8 => build_stream::<u8>(&device, &config, channels, on_chunk, err_cb)?,
+            F::U16 => build_stream::<u16>(&device, &config, channels, on_chunk, err_cb)?,
+            F::U32 => build_stream::<u32>(&device, &config, channels, on_chunk, err_cb)?,
+            F::U64 => build_stream::<u64>(&device, &config, channels, on_chunk, err_cb)?,
+            F::F64 => build_stream::<f64>(&device, &config, channels, on_chunk, err_cb)?,
             other => return Err(anyhow!("неподдерживаемый формат сэмплов: {other:?}")),
         };
 
@@ -220,12 +226,43 @@ fn perceptual_level(rms: f32) -> f32 {
     ((rms - 0.004).max(0.0) * 14.0).sqrt().min(1.0)
 }
 
-fn downmix(data: &[f32], channels: usize) -> Vec<f32> {
+/// Входной поток с сэмплами типа T. Колбэк (realtime-поток драйвера) только
+/// переводит сэмплы в f32, сводит каналы в моно и отдаёт кусок в on_chunk
+/// (буфер + атомики) — никакого IPC, каналов и логов.
+fn build_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    mut on_chunk: impl FnMut(Vec<f32>) + Send + 'static,
+    err_cb: impl FnMut(cpal::StreamError) + Send + 'static,
+) -> Result<cpal::Stream>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let stream = device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| on_chunk(downmix(data, channels)),
+        err_cb,
+        None,
+    )?;
+    Ok(stream)
+}
+
+/// Перевод в f32 (-1..1, преобразования dasp_sample: i16 делится на 32768,
+/// у беззнаковых вычитается середина диапазона) и сведение кадров в моно —
+/// за один проход, одной аллокацией.
+fn downmix<T>(data: &[T], channels: usize) -> Vec<f32>
+where
+    T: cpal::Sample,
+    f32: cpal::FromSample<T>,
+{
+    use cpal::Sample;
     if channels <= 1 {
-        return data.to_vec();
+        return data.iter().map(|&s| f32::from_sample(s)).collect();
     }
     data.chunks_exact(channels)
-        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .map(|frame| frame.iter().map(|&s| f32::from_sample(s)).sum::<f32>() / channels as f32)
         .collect()
 }
 
@@ -234,4 +271,35 @@ pub fn list_input_devices() -> Vec<String> {
     host.input_devices()
         .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::downmix;
+
+    #[test]
+    fn mono_f32_passes_through() {
+        assert_eq!(downmix(&[0.25f32, -0.5, 1.0], 1), vec![0.25, -0.5, 1.0]);
+        // channels = 0 (сломанный драйвер) не роняет поток: chunks_exact(0)
+        // паниковал бы.
+        assert_eq!(downmix(&[0.5f32], 0), vec![0.5]);
+    }
+
+    #[test]
+    fn integer_formats_map_to_unit_range() {
+        // i16: как прежний ручной код (s / 32768).
+        assert_eq!(downmix(&[i16::MIN, 0, 16384], 1), vec![-1.0, 0.0, 0.5]);
+        // u8 (8-битный PCM WASAPI): середина диапазона 128 — тишина.
+        assert_eq!(downmix(&[0u8, 128, 192], 1), vec![-1.0, 0.0, 0.5]);
+        // i32 (32-битный PCM WASAPI).
+        assert_eq!(downmix(&[i32::MIN, 0, 1 << 30], 1), vec![-1.0, 0.0, 0.5]);
+    }
+
+    #[test]
+    fn frames_are_averaged_and_a_partial_frame_is_dropped() {
+        // Стерео i16: (L + R) / 2 по кадрам; неполный хвостовой кадр
+        // отбрасывается, как и раньше (chunks_exact).
+        let mono = downmix(&[16384i16, 0, -16384, -16384, 1], 2);
+        assert_eq!(mono, vec![0.25, -0.5]);
+    }
 }
