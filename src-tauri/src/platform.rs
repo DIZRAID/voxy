@@ -43,31 +43,48 @@ pub fn play(sound: Sound) {
     });
 }
 
-/// Системный звук по псевдониму из звуковой схемы Windows
-/// (Панель управления → Звук → Звуки).
+/// Звуки Windows: те же роли, что Pop / Bottle / Basso на macOS. Файлы Apple
+/// можно использовать только на технике Apple, поэтому здесь свои
+/// синтезированные двойники, похожие по характеру (src-tauri/sounds,
+/// генератор make-sounds.py рядом). Раньше играли псевдонимы звуковой схемы
+/// Windows (SystemAsterisk и т. п.) — звучало совсем не как на Mac.
+const START_WAV: &[u8] = include_bytes!("../sounds/start.wav");
+const STOP_WAV: &[u8] = include_bytes!("../sounds/stop.wav");
+const ERROR_WAV: &[u8] = include_bytes!("../sounds/error.wav");
+
+/// WAV-файл звука; на всех платформах, чтобы тесты проверяли файлы и на macOS.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn sound_wav(sound: Sound) -> &'static [u8] {
+    match sound {
+        Sound::Start => START_WAV,
+        Sound::Stop => STOP_WAV,
+        Sound::Error => ERROR_WAV,
+    }
+}
+
+/// Встроенный WAV из памяти процесса (SND_MEMORY).
 ///
-/// Строка псевдонима — статическая (`w!` кладёт UTF-16 с нулём в конце
-/// в константу программы): с SND_ASYNC PlaySoundW возвращается сразу,
-/// а контракт API не обещает, что псевдоним к этому моменту уже прочитан.
-/// Раньше здесь был временный Vec<u16>, который освобождался сразу после
-/// вызова. SND_NODEFAULT: если псевдонима нет в схеме, молчим, а не играем
-/// стандартный «дзынь» Windows.
+/// С SND_ASYNC PlaySoundW возвращается сразу и читает данные во время
+/// проигрывания, поэтому буфер обязан жить до конца звука: include_bytes!
+/// лежит в образе программы всё время работы. Новый вызов прерывает
+/// предыдущий звук (у процесса один канал PlaySound), как и раньше.
+/// SND_NODEFAULT: если звук не проигрался, молчим, а не «дзынь» Windows.
+/// Громкость — общая громкость системы; выключаются звуки переключателем
+/// Sounds в настройках Voxy (звуковая схема Windows на них не влияет).
 #[cfg(target_os = "windows")]
 pub fn play(sound: Sound) {
-    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT};
-    let alias = match sound {
-        Sound::Start => windows_sys::w!("SystemAsterisk"),
-        Sound::Stop => windows_sys::w!("SystemDefault"),
-        Sound::Error => windows_sys::w!("SystemHand"),
-    };
-    // SAFETY: alias — указатель на статическую строку UTF-16 с завершающим
-    // нулём, живёт всё время работы программы; hmod = NULL допустим для
-    // SND_ALIAS. Результат (BOOL) не нужен: звук — необязательная подсказка.
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+    let wav = sound_wav(sound);
+    // SAFETY: с SND_MEMORY первый аргумент — указатель на образ WAV-файла в
+    // памяти (тип PCWSTR формальный, данные читаются как байты, выравнивание
+    // не требуется); буфер статический и живёт всё время работы программы;
+    // hmod = NULL допустим. Результат (BOOL) не нужен: звук — необязательная
+    // подсказка.
     unsafe {
         PlaySoundW(
-            alias,
+            wav.as_ptr().cast(),
             std::ptr::null_mut(),
-            SND_ALIAS | SND_ASYNC | SND_NODEFAULT,
+            SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
         );
     }
 }
@@ -458,6 +475,39 @@ mod uipi_tests {
         for own in [Some(true), Some(false), None] {
             assert!(!uipi_blocks_input(Some(false), own));
             assert!(!uipi_blocks_input(None, own));
+        }
+    }
+}
+
+#[cfg(test)]
+mod sound_tests {
+    use super::{sound_wav, Sound};
+
+    fn u16_at(b: &[u8], i: usize) -> u16 {
+        u16::from_le_bytes([b[i], b[i + 1]])
+    }
+    fn u32_at(b: &[u8], i: usize) -> u32 {
+        u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
+    }
+
+    /// PlaySoundW(SND_MEMORY) читает обычный WAV: проверяем, что встроенные
+    /// файлы — канонический PCM (как пишет make-sounds.py) и короткие.
+    #[test]
+    fn embedded_cue_sounds_are_short_pcm_wavs() {
+        for sound in [Sound::Start, Sound::Stop, Sound::Error] {
+            let b = sound_wav(sound);
+            assert_eq!(&b[0..4], b"RIFF");
+            assert_eq!(&b[8..12], b"WAVE");
+            assert_eq!(&b[12..16], b"fmt ");
+            assert_eq!(u16_at(b, 20), 1, "PCM");
+            assert_eq!(u16_at(b, 22), 1, "моно");
+            assert_eq!(u32_at(b, 24), 44_100);
+            assert_eq!(u16_at(b, 34), 16, "16 бит");
+            assert_eq!(&b[36..40], b"data");
+            let data = u32_at(b, 40) as usize;
+            assert_eq!(b.len(), 44 + data, "размер data-чанка");
+            let ms = data / 2 * 1000 / 44_100;
+            assert!((50..=600).contains(&ms), "{ms} мс");
         }
     }
 }

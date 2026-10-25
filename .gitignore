@@ -29,6 +29,8 @@ Desktop.ini
 
 # Test recordings and downloaded models (model_smoke can write them anywhere)
 *.wav
+# ...except Voxy's own Windows cue sounds (src-tauri/sounds/make-sounds.py)
+!src-tauri/sounds/*.wav
 *.onnx
 *.tar.bz2
 *.part

@@ -229,10 +229,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
   `ExcludeClipboardContentFromMonitorProcessing` format), it isn't put back,
   as if the manager had cleared it. The dictated text stays out of the Win+V
   clipboard history.
-- **Sounds:** Windows system sound aliases, so they follow your sound scheme:
-  `SystemAsterisk` (start), `SystemDefault` (stop), `SystemHand` (error). A
-  sound that the scheme leaves out (for example with the "No Sounds" scheme)
-  stays silent instead of falling back to the default beep.
+- **Sounds:** the same three cues as on a Mac, where Voxy plays the system
+  sounds Pop (start), Bottle (stop) and Basso (error). Apple's sound files
+  may only be used on Apple hardware, so Windows gets look-alikes built into
+  the app (`src-tauri/sounds/`, synthesized by `make-sounds.py` there): a
+  short pop, a round bottle tone and a low bass. They play at the system
+  volume and ignore the Windows sound scheme; turn them off with Sounds in
+  Voxy's General settings.
 - **Microphone:** any sample format WASAPI reports (8- to 64-bit integer or
   float). Each recording logs the device, sample rate, channels and format
   (`микрофон: …`).
@@ -350,8 +353,9 @@ https://github.com/DIZRAID/voxy/issues.
 18. Turn "Start with Windows" on and off and check Task Manager → Startup
     apps; after signing in, Voxy starts in the tray without a window and
     without an island flash.
-19. The sounds follow the Windows sound scheme; with the "No Sounds" scheme
-    there's silence, not the default beep.
+19. Start, stop and error sounds play (a pop, a bottle tone, a low bass,
+    like Pop, Bottle and Basso on a Mac); turning Sounds off in Settings
+    silences them.
 20. The microphone list shows your devices; an unusual microphone (USB mic,
     Bluetooth headset) records; with microphone access turned off in Windows
     privacy settings, the island shows "Microphone unavailable".
