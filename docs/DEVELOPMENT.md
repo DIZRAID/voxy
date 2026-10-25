@@ -60,7 +60,7 @@ Local builds are ad-hoc signed, so every build has a different code signature an
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): local recognition on the CPU (statically linked ONNX Runtime). It uses as many threads as the Mac has performance cores (on Windows, half the logical processors), up to 4
 - A custom listen-only `CGEventTap` (macOS) / `WH_KEYBOARD_LL` hook (Windows) for the global hotkey. It can tell the left and right modifier keys apart. Both heal themselves: the tap is re-enabled after macOS turns it off, and the Windows hook, which Windows removes without notice when it answers too slowly under heavy load, is reinstalled every 60 seconds while no key is held (a held key delays this by at most 10 minutes). The hook ignores Voxy's own synthetic Ctrl+V
 - [cpal](https://github.com/RustAudio/cpal) for microphone capture, in whatever sample format the device offers; [enigo](https://github.com/enigo-rs/enigo) and [arboard](https://github.com/1Password/arboard) for pasting
-- System sounds for start, stop and error: `NSSound` on macOS (Pop, Bottle, Basso); on Windows the sound scheme's `SystemAsterisk`, `SystemDefault` and `SystemHand` aliases, silent when the scheme has no sound for one
+- System sounds for start, stop and error: `NSSound` on macOS (Pop, Bottle, Basso); on Windows look-alikes of those three built into the app (`src-tauri/sounds/*.wav`, synthesized by `make-sounds.py`; Apple's files may only be used on Apple hardware), played from memory with `PlaySoundW`
 - [tauri-nspanel](https://github.com/ahkohd/tauri-nspanel) (macOS): a non-activating panel for the island above the menu bar
 - [tauri-plugin-single-instance](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/single-instance) (only one copy runs; a second launch opens Settings) and [tauri-plugin-autostart](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/autostart) (Launch at login through a LaunchAgent on macOS; Start with Windows through the `Voxy` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`)
 - [keyring](https://github.com/open-source-cooperative/keyring-rs) for API keys (Keychain on macOS, Credential Manager on Windows); [ureq](https://github.com/algesten/ureq) for HTTP
@@ -92,6 +92,9 @@ src-tauri/
     app.manifest    Common Controls v6 manifest, embedded by link.exe into every MSVC binary (test binaries too)
     nsis-sidebar.bmp, nsis-header.bmp   installer wizard art (Welcome/Finish page sidebar, page header)
     installer-art.py  draws those two bitmaps from icons/icon.png (Pillow)
+  sounds/
+    start.wav, stop.wav, error.wav   Windows cue sounds (look-alikes of Pop, Bottle, Basso)
+    make-sounds.py  synthesizes them (standard library only, deterministic)
   build.rs          IPC ACL manifest; for MSVC targets: static C runtime by default and the manifest above
   tauri.conf.json   app config (product name, bundle identifier, minimum macOS version, NSIS installer); the Settings window entry is the macOS one
   Info.plist        microphone usage text; menu-bar-only app (no Dock icon)
