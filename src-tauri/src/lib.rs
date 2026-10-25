@@ -1026,6 +1026,11 @@ mod tests {
         let ico = Some(Path::new("icons/icon.ico"));
         assert_eq!(nsis.installer_icon.as_deref(), ico);
         assert_eq!(nsis.uninstaller_icon.as_deref(), ico);
+        // Картинки мастера установки (src-tauri/windows/installer-art.py).
+        for image in [&nsis.sidebar_image, &nsis.header_image] {
+            let image = image.as_deref().expect("sidebarImage / headerImage");
+            assert!(Path::new(env!("CARGO_MANIFEST_DIR")).join(image).is_file(), "{image:?}");
+        }
         let languages = nsis.languages.as_deref().unwrap_or_default();
         for lang in ["English", "Russian"] {
             assert!(languages.iter().any(|l| l == lang), "нет языка {lang}: {languages:?}");

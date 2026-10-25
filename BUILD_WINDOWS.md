@@ -91,6 +91,14 @@ Output:
 `bundle.targets` is `["app", "nsis"]`. `app` is a macOS-only target that Tauri
 skips on Windows, so the build produces only the NSIS installer.
 
+The installer is a standard Windows wizard in English or Russian (picked from
+the Windows display language), with Voxy's art on the Welcome and Finish pages
+(`src-tauri/windows/nsis-*.bmp`, drawn by `installer-art.py` there). It
+installs for the current user without administrator rights, adds a Start menu
+shortcut, offers a desktop shortcut and "Run Voxy" on the last page, and
+replaces a running copy when you update. `/S` runs it silently (that is what
+`install.ps1` does); a silent first install also adds the desktop shortcut.
+
 For development, `cargo tauri dev` builds a debug version and starts it right
 away. To send the log to the console instead of the log file:
 
