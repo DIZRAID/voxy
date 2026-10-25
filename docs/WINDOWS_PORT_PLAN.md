@@ -527,3 +527,20 @@ Settings and system integration
 - /home/user/voxy/src-tauri/src/platform.rs
 - /home/user/voxy/src-tauri/tauri.conf.json
 - /home/user/voxy/src-tauri/build.rs
+
+---
+
+## 7. Implementation notes (what was actually done)
+
+The five workstreams were implemented in parallel, each in its own git worktree, and merged into one branch; the docs pass (§5) followed. Deviations from the briefs above, all deliberate:
+
+- **C5, island at the bottom (WS-C, WS-D).** Requested by the repo owner during implementation: on Windows the island is a floating pill bottom-center above the taskbar (window bottom edge on the primary monitor's work-area bottom; the page anchors the pill with a 12 px gap, rises in, sinks out, opacity-only under reduced motion). `island::reposition` re-applies the placement at every recording start, so taskbar/resolution/scale changes are picked up. Long error messages size the pill to their text (up to 480 px on Windows; on macOS the error pill widens only when the text would be clipped).
+- **WS-A.** The re-hook waits while keys are held, but at most 10 ticks (`MAX_REHOOK_DEFERRALS`): key-ups on the secure desktop (Win+L, Ctrl+Alt+Del, UAC) are never seen, and a stuck bit would otherwise block self-healing for the whole session.
+- **WS-B.** The elevated-foreground check runs **before** sending Ctrl+V, not only after a failed send: UIPI may drop the input while `SendInput` reports success, and the clipboard restore would then overwrite the unread text. `foreground_is_elevated` is true only when Voxy itself is not elevated.
+- **WS-C.** Settings re-open while the hidden window is still loading waits for the page load, with a 3 s fallback (`SETTINGS_LOAD_GRACE`); a minimized Settings window is restored from the tray.
+- **WS-D.** New `ui/guard.js` (shared accelerator/context-menu guard; the context menu stays available in inputs and on selected text). Island enter/exit uses `@starting-style` and `transition-behavior: allow-discrete` (Chromium 117+, i.e. any current WebView2).
+- **WS-E, test manifest.** `cargo:rustc-link-arg-tests` reaches integration tests only, not `cargo test --lib`, so the manifest is `src-tauri/windows/app.manifest`, embedded by link.exe (`/MANIFEST:EMBED` + `/MANIFESTINPUT`) into **every** MSVC binary, and tauri-build is told not to embed its own copy (`WindowsAttributes::new_without_app_manifest()`; two `RT_MANIFEST` resources would fail with CVT1100). The exe also gets link.exe's default `asInvoker` UAC section.
+- **WS-E, release.** The installer size floor is 5 MB (estimate 6–8 MB; raise it after the first real release). The publish job runs only when every build succeeded. `ci.yml` no longer sets `STATIC_VCRUNTIME` globally, so CI exercises the `build.rs` default.
+- **WS-E, install.ps1.** ~490 lines; waits on the installer process itself, runs the NSIS uninstaller with `_?=` so the wait covers the real uninstall, warns and does not launch Voxy when PowerShell runs elevated, exit code 2 for conflicting options.
+
+Verification available here was compile-level only (`scripts/cross-check.sh` for both targets, `node --check`, YAML loading, PowerShell 7 on Linux with mocks for `install.ps1`, Playwright screenshots of the UI preview). Everything in §6.2 still needs a real Windows PC.
