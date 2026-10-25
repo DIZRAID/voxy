@@ -1,6 +1,7 @@
-//! Платформенный шов: звуки, разрешения, клавиши вставки.
-//! Для порта на Windows меняются только реализации в этом файле
-//! (плюс горячая клавиша по умолчанию в store.rs).
+//! Платформенный шов: звуки, разрешения, клавиши вставки, буфер обмена
+//! (поколение и пометка «секрет»), диагностика вставки в окно
+//! администратора (UIPI, только Windows). Платформенные различия живут
+//! в реализациях этого файла (плюс горячая клавиша по умолчанию в store.rs).
 
 use std::sync::OnceLock;
 use tauri::AppHandle;
@@ -42,17 +43,32 @@ pub fn play(sound: Sound) {
     });
 }
 
+/// Системный звук по псевдониму из звуковой схемы Windows
+/// (Панель управления → Звук → Звуки).
+///
+/// Строка псевдонима — статическая (`w!` кладёт UTF-16 с нулём в конце
+/// в константу программы): с SND_ASYNC PlaySoundW возвращается сразу,
+/// а контракт API не обещает, что псевдоним к этому моменту уже прочитан.
+/// Раньше здесь был временный Vec<u16>, который освобождался сразу после
+/// вызова. SND_NODEFAULT: если псевдонима нет в схеме, молчим, а не играем
+/// стандартный «дзынь» Windows.
 #[cfg(target_os = "windows")]
 pub fn play(sound: Sound) {
-    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT};
     let alias = match sound {
-        Sound::Start => "SystemAsterisk",
-        Sound::Stop => "SystemDefault",
-        Sound::Error => "SystemHand",
+        Sound::Start => windows_sys::w!("SystemAsterisk"),
+        Sound::Stop => windows_sys::w!("SystemDefault"),
+        Sound::Error => windows_sys::w!("SystemHand"),
     };
-    let wide: Vec<u16> = alias.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: alias — указатель на статическую строку UTF-16 с завершающим
+    // нулём, живёт всё время работы программы; hmod = NULL допустим для
+    // SND_ALIAS. Результат (BOOL) не нужен: звук — необязательная подсказка.
     unsafe {
-        PlaySoundW(wide.as_ptr(), std::ptr::null_mut(), SND_ALIAS | SND_ASYNC);
+        PlaySoundW(
+            alias,
+            std::ptr::null_mut(),
+            SND_ALIAS | SND_ASYNC | SND_NODEFAULT,
+        );
     }
 }
 
@@ -211,9 +227,11 @@ pub fn inference_threads() -> i32 {
         .unwrap_or(2)
 }
 
-/// Поколение буфера обмена (NSPasteboard.changeCount): растёт при каждой
-/// новой записи в буфер, кто бы её ни сделал. None — платформа не сообщает
-/// (Windows: пока не реализовано).
+/// Поколение буфера обмена: растёт при каждой новой записи в буфер, кто бы
+/// её ни сделал. macOS — NSPasteboard.changeCount, Windows —
+/// GetClipboardSequenceNumber. None — платформа не сообщает; тогда
+/// output::insert_text не может заметить чужую запись и восстанавливает
+/// буфер всегда.
 #[cfg(target_os = "macos")]
 pub fn clipboard_generation() -> Option<isize> {
     // Вызывается с рабочего потока: без пула автоосвобождения временные
@@ -223,7 +241,21 @@ pub fn clipboard_generation() -> Option<isize> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Счётчик ведётся системой на каждую window station и увеличивается при
+/// каждом изменении или очистке буфера. Открывать буфер (OpenClipboard)
+/// не нужно. 0 означает «нет права WINSTA_ACCESSCLIPBOARD» — это не
+/// поколение, поэтому None.
+#[cfg(target_os = "windows")]
+pub fn clipboard_generation() -> Option<isize> {
+    use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
+    // SAFETY: функция без аргументов, только читает счётчик window station.
+    match unsafe { GetClipboardSequenceNumber() } {
+        0 => None,
+        n => Some(n as isize),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn clipboard_generation() -> Option<isize> {
     None
 }
@@ -247,9 +279,187 @@ fn pasteboard_holds_secret(pasteboard: &objc2_app_kit::NSPasteboard) -> bool {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows: менеджеры паролей (1Password, Bitwarden, KeePassXC) кладут
+/// рядом с секретом формат «ExcludeClipboardContentFromMonitorProcessing»
+/// — договорённость Windows для «мониторы буфера, не трогайте это».
+/// Собственные записи Voxy его не ставят: arboard в exclude_from_history()
+/// пишет только CanIncludeInClipboardHistory = 0 (журнал Win+V), поэтому
+/// продиктованный ранее и возвращённый в буфер текст за секрет не считается.
+/// RegisterClipboardFormatW и IsClipboardFormatAvailable работают без
+/// OpenClipboard, так что проверка не мешает чужим операциям с буфером.
+#[cfg(target_os = "windows")]
+pub fn clipboard_holds_secret() -> bool {
+    use windows_sys::Win32::System::DataExchange::{
+        IsClipboardFormatAvailable, RegisterClipboardFormatW,
+    };
+    // Номер зарегистрированного формата постоянен до конца сеанса входа:
+    // регистрируем один раз. 0 — регистрация не удалась (не бывает на
+    // практике); тогда секретов не видим, как до этой проверки.
+    static FORMAT: OnceLock<u32> = OnceLock::new();
+    let fmt = *FORMAT.get_or_init(|| {
+        // SAFETY: аргумент — статическая строка UTF-16 с завершающим нулём.
+        unsafe {
+            RegisterClipboardFormatW(windows_sys::w!(
+                "ExcludeClipboardContentFromMonitorProcessing"
+            ))
+        }
+    });
+    // SAFETY: fmt — номер формата; функция только читает состояние буфера.
+    fmt != 0 && unsafe { IsClipboardFormatAvailable(fmt) } != 0
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn clipboard_holds_secret() -> bool {
     false
+}
+
+/// Windows: активное окно принадлежит процессу с повышенными правами
+/// («Запуск от имени администратора»), а сам Voxy запущен без них. Ровно
+/// в этом случае UIPI молча не пропускает синтетический ввод (SendInput)
+/// в окно: процесс может слать ввод только окнам своего или более низкого
+/// уровня целостности, а ни возвращаемое значение, ни GetLastError причину
+/// не называют. Если Voxy сам запущен от администратора, UIPI не мешает,
+/// и ответ — false.
+///
+/// Цепочка: GetForegroundWindow → GetWindowThreadProcessId →
+/// OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) → OpenProcessToken
+/// (TOKEN_QUERY) → GetTokenInformation(TokenElevation). Любой сбой — false
+/// (тогда вставка просто пробует как обычно) и строка в логе на уровне debug.
+/// Другие платформы: всегда false.
+#[cfg(target_os = "windows")]
+pub fn foreground_is_elevated() -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+
+    // SAFETY: функции без указателей на входе; NULL — допустимый ответ
+    // (нет активного окна: переключение, экран блокировки, окно UAC).
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        log::debug!("uipi: нет активного окна");
+        return false;
+    }
+    let mut pid: u32 = 0;
+    // SAFETY: hwnd получен выше (если окно уже закрыто, функция вернёт 0),
+    // pid — живая локальная переменная.
+    if unsafe { GetWindowThreadProcessId(hwnd, &mut pid) } == 0 || pid == 0 {
+        log::debug!(
+            "uipi: GetWindowThreadProcessId не удался ({})",
+            last_error()
+        );
+        return false;
+    }
+    // SAFETY: простой вызов; результат проверяется на NULL ниже.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        log::debug!("uipi: OpenProcess({pid}) не удался ({})", last_error());
+        return false;
+    }
+    let foreground = token_elevated(process, "активное окно");
+    // SAFETY: process — открытый выше дескриптор, закрывается ровно один раз.
+    unsafe { CloseHandle(process) };
+    if foreground != Some(true) {
+        // Обычное окно (почти каждая вставка): про себя спрашивать незачем.
+        return false;
+    }
+
+    // GetCurrentProcess возвращает псевдодескриптор: закрывать не нужно.
+    // SAFETY: функция без аргументов.
+    let own = token_elevated(unsafe { GetCurrentProcess() }, "Voxy");
+    log::debug!("uipi: активное окно (pid {pid}) с повышенными правами, Voxy: {own:?}");
+    uipi_blocks_input(foreground, own)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn foreground_is_elevated() -> bool {
+    false
+}
+
+/// TokenElevation процесса: Some(true) — токен с повышенными правами,
+/// None — узнать не удалось (причина — в логе на уровне debug).
+#[cfg(target_os = "windows")]
+fn token_elevated(process: windows_sys::Win32::Foundation::HANDLE, who: &str) -> Option<bool> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
+
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: process — открытый вызывающим дескриптор (или псевдодескриптор
+    // текущего процесса); token — живая локальная переменная.
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        log::debug!(
+            "uipi: OpenProcessToken ({who}) не удался ({})",
+            last_error()
+        );
+        return None;
+    }
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut returned: u32 = 0;
+    // SAFETY: буфер — TOKEN_ELEVATION ровно того размера, что передан;
+    // для класса TokenElevation система пишет именно эту структуру.
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            &mut elevation as *mut TOKEN_ELEVATION as *mut std::ffi::c_void,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    };
+    let result = if ok == 0 {
+        log::debug!(
+            "uipi: GetTokenInformation ({who}) не удался ({})",
+            last_error()
+        );
+        None
+    } else {
+        Some(elevation.TokenIsElevated != 0)
+    };
+    // SAFETY: token открыт выше и закрывается ровно один раз.
+    unsafe { CloseHandle(token) };
+    result
+}
+
+/// Код последней ошибки Win32 этого потока — для строк лога. Вызывать
+/// сразу после неудачного вызова, пока его не затёр следующий.
+#[cfg(target_os = "windows")]
+fn last_error() -> u32 {
+    // SAFETY: функция без аргументов, читает поле TEB текущего потока.
+    unsafe { windows_sys::Win32::Foundation::GetLastError() }
+}
+
+/// Решение «UIPI заблокирует наш ввод»: активное окно точно с повышенными
+/// правами, а Voxy — нет (неизвестное про себя считаем обычным запуском:
+/// так Voxy и стартует из автозагрузки и установщика). Неизвестное про
+/// окно — не блокировка: лучше обычная попытка вставки, чем ложная тревога.
+#[cfg(any(target_os = "windows", test))]
+fn uipi_blocks_input(foreground_elevated: Option<bool>, self_elevated: Option<bool>) -> bool {
+    foreground_elevated == Some(true) && self_elevated != Some(true)
+}
+
+#[cfg(test)]
+mod uipi_tests {
+    use super::uipi_blocks_input;
+
+    #[test]
+    fn only_an_elevated_window_above_a_normal_voxy_blocks_input() {
+        // Окно администратора, Voxy обычный (или неизвестно) — блокировка.
+        assert!(uipi_blocks_input(Some(true), Some(false)));
+        assert!(uipi_blocks_input(Some(true), None));
+        // Voxy сам от администратора — UIPI не мешает.
+        assert!(!uipi_blocks_input(Some(true), Some(true)));
+        // Обычное окно или неизвестно про окно — без ложной тревоги.
+        for own in [Some(true), Some(false), None] {
+            assert!(!uipi_blocks_input(Some(false), own));
+            assert!(!uipi_blocks_input(None, own));
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
