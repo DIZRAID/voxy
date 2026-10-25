@@ -57,7 +57,7 @@ concurrency:
 
 env:
   # npm package @tauri-apps/cli; npm never lets a published version change.
-  TAURI_CLI_VERSION: "2.11.5"
+  TAURI_CLI_VERSION: "2.12.4"
   # rustc that builds the release (v0.1.0 was built with 1.98.1).
   RUST_TOOLCHAIN: "1.98.1"
 
@@ -285,15 +285,12 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           BUNDLES: ${{ matrix.bundles }}
-          # Windows: link the VC++ runtime statically, so the app starts on PCs
-          # without the VC++ Redistributable (the installer doesn't ship it).
-          # The locked tauri-build (2.6.3) only reads this variable. Tauri CLI
-          # 2.11 sets it by itself, but the next minor CLI release stops doing
-          # that in favour of the build.windows.staticVCRuntime config key,
-          # which tauri-build 2.6.3 doesn't read. build.rs defaults it to true
-          # for MSVC builds as well; it stays explicit here, so the release
-          # does not depend on that default. macOS builds ignore it.
-          STATIC_VCRUNTIME: "true"
+          # Windows links the VC++ runtime statically (the app starts on PCs
+          # without the VC++ Redistributable, which the installer doesn't
+          # ship): build.rs asks tauri-build for it with
+          # WindowsAttributes::static_vc_runtime(true), on top of tauri-build
+          # 2.7's default (build.windows.staticVCRuntime). STATIC_VCRUNTIME is
+          # deprecated since tauri-build 2.7 and deliberately not set here.
           # What tauri-action v1 set for the .dmg (lay out the window with
           # Finder even on CI).
           TAURI_BUNDLER_DMG_IGNORE_CI: "true"

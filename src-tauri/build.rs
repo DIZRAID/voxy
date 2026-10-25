@@ -1,9 +1,10 @@
 include!("src/app_commands.rs");
 
 fn main() {
-    // tauri-build reads STATIC_VCRUNTIME on Windows but does not ask Cargo to
-    // rerun when it changes, so a plain `cargo build` could keep stale CRT
-    // link arguments from a previous `cargo tauri build`.
+    // tauri-build still honors the deprecated STATIC_VCRUNTIME override (it
+    // wins over the static_vc_runtime attribute below, with a warning) but
+    // does not ask Cargo to rerun when it changes, so a plain `cargo build`
+    // could keep stale CRT link arguments.
     println!("cargo:rerun-if-env-changed=STATIC_VCRUNTIME");
     // tauri-build prints its own rerun-if-changed lines, which turns off
     // Cargo's default "rerun when any file changes", so name these too.
@@ -25,19 +26,12 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     if target_os == "windows" && target_env == "msvc" {
-        // Static C runtime by default. The sherpa-onnx Windows libraries are
-        // built with /MT; with the dynamic CRT the linker mixes runtimes
-        // (LNK4098 on LIBCMT) and the app needs the VC++ Redistributable.
-        // Tauri CLI 2.11 sets STATIC_VCRUNTIME=true for `cargo tauri
-        // dev/build`, plain `cargo build` / `cargo test` do not. tauri-build
-        // reads the variable from this process's environment (tauri-build
-        // 2.6.3, lib.rs:708), so setting it here, before try_build, works.
-        // An explicit value (e.g. "false") wins. Single-threaded here, so
-        // set_var is sound; rerun-if-env-changed above looks at the outside
-        // environment, which this does not change.
-        if std::env::var_os("STATIC_VCRUNTIME").is_none() {
-            std::env::set_var("STATIC_VCRUNTIME", "true");
-        }
+        // Static C runtime: the sherpa-onnx Windows libraries are built with
+        // /MT; with the dynamic CRT the linker mixes runtimes (LNK4098 on
+        // LIBCMT) and the app needs the VC++ Redistributable. tauri-build
+        // 2.7 already defaults to it (build.windows.staticVCRuntime = true);
+        // static_vc_runtime(true) below states it explicitly, for plain
+        // `cargo build` / `cargo test` as well as `cargo tauri build`.
 
         // The Common Controls v6 manifest (windows/app.manifest), embedded by
         // link.exe into every binary of the package, test binaries included.
@@ -60,8 +54,9 @@ fn main() {
             .join("app.manifest");
         println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
         println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
-        attributes = attributes
-            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        attributes = attributes.windows_attributes(
+            tauri_build::WindowsAttributes::new_without_app_manifest().static_vc_runtime(true),
+        );
     }
 
     if let Err(error) = tauri_build::try_build(attributes) {

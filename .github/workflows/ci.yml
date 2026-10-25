@@ -40,9 +40,10 @@ env:
   RUST_BACKTRACE: 1
   # No debug info in CI builds: faster compile and link, much smaller cache.
   CARGO_PROFILE_DEV_DEBUG: 0
-  # STATIC_VCRUNTIME is not set here on purpose: on Windows (MSVC) build.rs
-  # defaults it to true (the sherpa-onnx libraries are built with /MT), so CI
-  # builds exactly what a plain `cargo build` / `cargo test` builds there.
+  # The static VC++ runtime needs no setting here: on Windows (MSVC) build.rs
+  # requests it from tauri-build (the sherpa-onnx libraries are built with
+  # /MT), so CI builds exactly what a plain `cargo build` / `cargo test`
+  # builds there. STATIC_VCRUNTIME is deprecated since tauri-build 2.7.
 
 jobs:
   build:
