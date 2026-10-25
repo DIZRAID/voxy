@@ -47,7 +47,15 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Media_Audio",
+    "Win32_Security",             # GetTokenInformation: is the foreground app elevated (UIPI)?
+    "Win32_System_DataExchange",  # clipboard sequence number and formats
+    "Win32_System_LibraryLoader", # GetModuleHandleW for the keyboard hook
+    "Win32_System_Threading",     # hook thread priority, OpenProcess/OpenProcessToken
 ] }
+# Windows build number: Mica needs Windows 11 (build 22000+). Already in
+# Cargo.lock as a dependency of tauri; reads RtlGetVersion, so no manifest
+# tricks are needed.
+windows-version = "0.1"
 
 [profile.release]
 lto = true

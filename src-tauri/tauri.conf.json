@@ -54,15 +54,30 @@
     "active": true,
     "targets": ["app", "nsis"],
     "category": "Productivity",
+    "publisher": "DIZRAID",
+    "homepage": "https://github.com/DIZRAID/voxy",
+    "shortDescription": "Push-to-talk dictation",
+    "longDescription": "Voxy — push-to-talk dictation with on-device speech recognition.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.icns"
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
     "macOS": {
       "minimumSystemVersion": "14.0",
       "entitlements": "Entitlements.plist"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "languages": ["English", "Russian"],
+        "displayLanguageSelector": false
+      }
     }
   }
 }
