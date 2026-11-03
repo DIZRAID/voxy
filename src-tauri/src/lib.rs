@@ -322,6 +322,13 @@ fn island_metrics(metrics: State<island::IslandMetrics>) -> island::IslandMetric
     *metrics
 }
 
+/// Островок подтверждает показанное событие (`ack` — его номер) или, сразу
+/// после (пере)загрузки страницы, без `ack` забирает текущее состояние.
+#[tauri::command]
+fn island_sync(ack: Option<u64>) -> serde_json::Value {
+    island::sync(ack)
+}
+
 #[tauri::command]
 fn permissions_status() -> serde_json::Value {
     json!({
@@ -769,6 +776,7 @@ pub fn run() {
             permissions_status,
             open_permission_settings,
             island_metrics,
+            island_sync,
             open_url,
         ])
         .setup(|app| {
@@ -1095,6 +1103,7 @@ mod tests {
             "core:event:allow-listen",
             "core:event:allow-unlisten",
             "allow-island-metrics",
+            "allow-island-sync",
             "allow-cancel-recording",
         ]
         .map(String::from)

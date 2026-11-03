@@ -95,9 +95,9 @@ function stopSampler() {
 
 // Таймер обновляется ровно раз в секунду, выровненно по границе секунды
 // (раньше — 4 раза в секунду при тех же цифрах).
-function startTimer() {
-  const t0 = Date.now();
-  timerEl.textContent = "0:00";
+// elapsedMs: сколько запись уже идёт (страница загрузилась посреди записи).
+function startTimer(elapsedMs = 0) {
+  const t0 = Date.now() - elapsedMs;
   timerEl.className = "timer";
   clearTimeout(timerTimeout);
   const tick = () => {
@@ -110,7 +110,7 @@ function startTimer() {
     }
     timerTimeout = setTimeout(tick, 1000 - (elapsed % 1000) + 5);
   };
-  timerTimeout = setTimeout(tick, 1000);
+  tick();
 }
 
 function stopTimer() {
@@ -148,7 +148,7 @@ function disarmCancel() {
   pill.classList.remove("cancel-armed");
 }
 
-function setState(state, message, maxS) {
+function setState(state, message, maxS, elapsedMs = 0) {
   const appeared = state === "error" && getComputedStyle(pill).display === "none";
   clearTimeout(collapseTimeout);
   clearTimeout(processingTimeout);
@@ -161,7 +161,7 @@ function setState(state, message, maxS) {
 
   if (state === "recording") {
     maxSeconds = maxS || 0;
-    startTimer();
+    startTimer(elapsedMs);
     startSampler();
   } else {
     stopTimer();
@@ -192,7 +192,26 @@ cancelChip.addEventListener("click", (e) => {
   invoke("cancel_recording");
 });
 
-listen("state", (e) => setState(e.payload.state, e.payload.message, e.payload.max_s));
+// Каждое показанное событие подтверждается: на Windows Rust ждёт ответа на
+// начало записи и, не дождавшись, перезагружает страницу или окно.
+listen("state", (e) => {
+  const p = e.payload;
+  setState(p.state, p.message, p.max_s);
+  if (typeof p.seq === "number") invoke("island_sync", { ack: p.seq }).catch(() => {});
+});
+
+// Страница (пере)загрузилась: возможно, посреди записи — берём у Rust то,
+// что должно быть на экране. Короткоживущие состояния (ошибка) не
+// повторяются: их время уже вышло или вот-вот выйдет.
+if (IS_TAURI) {
+  invoke("island_sync", {})
+    .then((s) => {
+      if (s && (s.state === "recording" || s.state === "processing")) {
+        setState(s.state, s.message, s.max_s, s.elapsed_ms || 0);
+      }
+    })
+    .catch(() => {});
+}
 listen("level", (e) => {
   if (island.dataset.state !== "recording") return;
   latestLevel = Math.min(1, Math.max(0, Number(e.payload) || 0));
