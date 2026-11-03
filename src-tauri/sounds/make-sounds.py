@@ -19,8 +19,8 @@ third-octave bands. No Apple audio is copied into this script or its output.
 - error.wav (like Basso): a low "bonk" of two harmonic tones (~83 and
   ~215 Hz) whose upper partials die first, so it darkens within ~100 ms.
 
-platform.rs embeds the WAV files (include_bytes!) and plays them with
-PlaySoundW(SND_MEMORY). Standard library only and deterministic (fixed
+platform.rs embeds the WAV files (include_bytes!) and plays them through
+WASAPI (cpal), falling back to PlaySoundW(SND_MEMORY). Standard library only and deterministic (fixed
 noise seeds), so the output is reproducible: 16-bit PCM, mono, 44.1 kHz,
 peaks at -9 dBFS.
 """

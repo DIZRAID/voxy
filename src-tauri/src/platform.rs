@@ -63,30 +63,231 @@ fn sound_wav(sound: Sound) -> &'static [u8] {
     }
 }
 
-/// Встроенный WAV из памяти процесса (SND_MEMORY).
+/// Сэмплы встроенного WAV (16-бит PCM, моно, как пишет make-sounds.py) в
+/// f32 −1..1 и частота дискретизации. None — файл не того формата.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn decode_pcm16_mono(wav: &[u8]) -> Option<(u32, Vec<f32>)> {
+    let u16_at = |i: usize| Some(u16::from_le_bytes(wav.get(i..i + 2)?.try_into().ok()?));
+    let u32_at = |i: usize| Some(u32::from_le_bytes(wav.get(i..i + 4)?.try_into().ok()?));
+    if wav.get(0..4)? != b"RIFF" || wav.get(8..12)? != b"WAVE" {
+        return None;
+    }
+    let (mut rate, mut fmt_ok) = (0u32, false);
+    let mut i = 12;
+    while i + 8 <= wav.len() {
+        let id = &wav[i..i + 4];
+        let len = u32_at(i + 4)? as usize;
+        let body = i + 8;
+        if id == b"fmt " {
+            // PCM, моно, 16 бит.
+            fmt_ok = u16_at(body)? == 1 && u16_at(body + 2)? == 1 && u16_at(body + 14)? == 16;
+            rate = u32_at(body + 4)?;
+        } else if id == b"data" {
+            if !fmt_ok || rate == 0 {
+                return None;
+            }
+            let data = wav.get(body..body + len)?;
+            let samples = data
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+                .collect();
+            return Some((rate, samples));
+        }
+        // Чанки выровнены по чётной границе.
+        i = body + len + (len & 1);
+    }
+    None
+}
+
+/// Линейная передискретизация моно-сигнала: звуки записаны в 44,1 кГц, а
+/// микшер Windows обычно работает в 48 кГц (бывает и 96 кГц и выше).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn resample_linear(src: &[f32], from: u32, to: u32) -> Vec<f32> {
+    if from == to || src.is_empty() || from == 0 || to == 0 {
+        return src.to_vec();
+    }
+    let n = ((src.len() as u64 * to as u64) / from as u64) as usize;
+    let step = from as f64 / to as f64;
+    (0..n)
+        .map(|k| {
+            let x = k as f64 * step;
+            let i = x as usize;
+            let frac = (x - i as f64) as f32;
+            let a = src[i.min(src.len() - 1)];
+            let b = src[(i + 1).min(src.len() - 1)];
+            a + (b - a) * frac
+        })
+        .collect()
+}
+
+/// Звуки Windows играются через WASAPI (cpal) на устройстве вывода,
+/// которое используется по умолчанию В МОМЕНТ звука, — как запись берёт
+/// микрофон по умолчанию. Раньше был PlaySoundW (winmm): после долгой
+/// работы (сон, смена наушников или колонок, смена устройства по
+/// умолчанию) он переставал звучать до перезапуска Voxy. PlaySoundW
+/// остался запасным путём, если WASAPI не сработал.
+///
+/// Каждый звук — свой короткий поток (звуки редкие): открыть устройство,
+/// доиграть, закрыть. Новый звук прерывает предыдущий, как и раньше
+/// (у PlaySound был один канал на процесс): у каждого звука номер
+/// поколения, и звук старого поколения дальше играет тишину и закрывается.
+/// В аудио-колбэке только атомики и чтение готового буфера.
+#[cfg(target_os = "windows")]
+mod cue_player {
+    use super::{decode_pcm16_mono, resample_linear, sound_wav, Sound};
+    use anyhow::{anyhow, Result};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+    use std::time::{Duration, Instant};
+
+    static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    /// Разобранный звук: частота и сэмплы; None — WAV не читается.
+    type Decoded = Option<(u32, Vec<f32>)>;
+
+    fn decoded(sound: Sound) -> Option<&'static (u32, Vec<f32>)> {
+        static CACHE: [OnceLock<Decoded>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+        let slot = match sound {
+            Sound::Start => &CACHE[0],
+            Sound::Stop => &CACHE[1],
+            Sound::Error => &CACHE[2],
+        };
+        slot.get_or_init(|| decode_pcm16_mono(sound_wav(sound))).as_ref()
+    }
+
+    pub fn play(sound: Sound) {
+        let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        let spawned = std::thread::Builder::new()
+            .name("voxy-sound".into())
+            .spawn(move || {
+                if let Err(e) = play_wasapi(sound, generation) {
+                    log::warn!("звук через WASAPI не проигран ({e:#}), играю через PlaySoundW");
+                    if GENERATION.load(Ordering::SeqCst) == generation {
+                        super::play_winmm(sound);
+                    }
+                }
+            });
+        if spawned.is_err() {
+            super::play_winmm(sound);
+        }
+    }
+
+    fn play_wasapi(sound: Sound, generation: u64) -> Result<()> {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        use cpal::SampleFormat as F;
+
+        let (src_rate, mono) = decoded(sound).ok_or_else(|| anyhow!("встроенный WAV не читается"))?;
+        let device = cpal::default_host()
+            .default_output_device()
+            .ok_or_else(|| anyhow!("нет устройства вывода по умолчанию"))?;
+        let supported = device.default_output_config()?;
+        let rate = supported.sample_rate().0;
+        let channels = (supported.channels() as usize).max(1);
+        let samples = Arc::new(resample_linear(mono, *src_rate, rate));
+        let pos = Arc::new(AtomicUsize::new(0));
+        let config: cpal::StreamConfig = supported.config();
+
+        let s = (&device, &config, channels, &samples, &pos, generation);
+        let stream = match supported.sample_format() {
+            F::F32 => build::<f32>(s)?,
+            F::I16 => build::<i16>(s)?,
+            F::I32 => build::<i32>(s)?,
+            F::U16 => build::<u16>(s)?,
+            F::U8 => build::<u8>(s)?,
+            F::F64 => build::<f64>(s)?,
+            other => return Err(anyhow!("неподдерживаемый формат вывода: {other:?}")),
+        };
+        stream.play()?;
+
+        // Ждём конца звука (или нового звука), но не дольше длины + запас:
+        // зависшее устройство не держит поток вечно.
+        let total = samples.len();
+        let deadline =
+            Instant::now() + Duration::from_millis(total as u64 * 1000 / rate.max(1) as u64 + 1000);
+        while pos.load(Ordering::Relaxed) < total
+            && GENERATION.load(Ordering::SeqCst) == generation
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Дать буферу устройства доиграть хвост, если звук не прерван.
+        if GENERATION.load(Ordering::SeqCst) == generation {
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        drop(stream);
+        Ok(())
+    }
+
+    type Args<'a> = (
+        &'a cpal::Device,
+        &'a cpal::StreamConfig,
+        usize,
+        &'a Arc<Vec<f32>>,
+        &'a Arc<AtomicUsize>,
+        u64,
+    );
+
+    fn build<T>((device, config, channels, samples, pos, generation): Args) -> Result<cpal::Stream>
+    where
+        T: cpal::SizedSample + cpal::FromSample<f32>,
+    {
+        use cpal::traits::DeviceTrait;
+        let samples = samples.clone();
+        let pos = pos.clone();
+        let stream = device.build_output_stream(
+            config,
+            move |out: &mut [T], _: &cpal::OutputCallbackInfo| {
+                let live = GENERATION.load(Ordering::Relaxed) == generation;
+                let mut i = pos.load(Ordering::Relaxed);
+                for frame in out.chunks_mut(channels) {
+                    let v = if live && i < samples.len() {
+                        i += 1;
+                        samples[i - 1]
+                    } else {
+                        0.0
+                    };
+                    for s in frame {
+                        *s = T::from_sample(v);
+                    }
+                }
+                pos.store(i, Ordering::Relaxed);
+            },
+            |e| log::warn!("ошибка потока звука: {e}"),
+            None,
+        )?;
+        Ok(stream)
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn play(sound: Sound) {
+    cue_player::play(sound);
+}
+
+/// Запасной путь: встроенный WAV из памяти процесса (SND_MEMORY).
 ///
 /// С SND_ASYNC PlaySoundW возвращается сразу и читает данные во время
 /// проигрывания, поэтому буфер обязан жить до конца звука: include_bytes!
 /// лежит в образе программы всё время работы. Новый вызов прерывает
-/// предыдущий звук (у процесса один канал PlaySound), как и раньше.
+/// предыдущий звук (у процесса один канал PlaySound).
 /// SND_NODEFAULT: если звук не проигрался, молчим, а не «дзынь» Windows.
-/// Громкость — общая громкость системы; выключаются звуки переключателем
-/// Sounds в настройках Voxy (звуковая схема Windows на них не влияет).
 #[cfg(target_os = "windows")]
-pub fn play(sound: Sound) {
+fn play_winmm(sound: Sound) {
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     let wav = sound_wav(sound);
     // SAFETY: с SND_MEMORY первый аргумент — указатель на образ WAV-файла в
     // памяти (тип PCWSTR формальный, данные читаются как байты, выравнивание
     // не требуется); буфер статический и живёт всё время работы программы;
-    // hmod = NULL допустим. Результат (BOOL) не нужен: звук — необязательная
-    // подсказка.
-    unsafe {
+    // hmod = NULL допустим.
+    let ok = unsafe {
         PlaySoundW(
             wav.as_ptr().cast(),
             std::ptr::null_mut(),
             SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
-        );
+        )
+    };
+    if ok == 0 {
+        log::warn!("PlaySoundW не проиграл звук");
     }
 }
 
@@ -482,7 +683,35 @@ mod uipi_tests {
 
 #[cfg(test)]
 mod sound_tests {
-    use super::{sound_wav, Sound};
+    use super::{decode_pcm16_mono, resample_linear, sound_wav, Sound};
+
+    /// Проигрыватель WASAPI читает встроенные файлы сам: они разбираются,
+    /// длина совпадает с data-чанком, громкость в пределах (пики -9 dBFS).
+    #[test]
+    fn embedded_cue_sounds_decode() {
+        for sound in [Sound::Start, Sound::Stop, Sound::Error] {
+            let wav = sound_wav(sound);
+            let (rate, s) = decode_pcm16_mono(wav).expect("decode");
+            assert_eq!(rate, 44_100);
+            assert_eq!(s.len(), (wav.len() - 44) / 2);
+            let peak = s.iter().fold(0f32, |m, v| m.max(v.abs()));
+            assert!(peak > 0.1 && peak < 0.5, "пик {peak}");
+        }
+        assert!(decode_pcm16_mono(b"RIFF....WAVEjunk").is_none());
+        assert!(decode_pcm16_mono(&[]).is_none());
+    }
+
+    /// 44,1 → 48 кГц: длина в пропорции частот, края и середина сохранены.
+    #[test]
+    fn resample_keeps_duration_and_shape() {
+        let src: Vec<f32> = (0..44_100).map(|i| i as f32 / 44_100.0).collect();
+        let out = resample_linear(&src, 44_100, 48_000);
+        assert_eq!(out.len(), 48_000);
+        assert_eq!(out[0], 0.0);
+        assert!((out[24_000] - 0.5).abs() < 1e-3);
+        assert_eq!(resample_linear(&src, 44_100, 44_100), src);
+        assert!(resample_linear(&[], 44_100, 48_000).is_empty());
+    }
 
     fn u16_at(b: &[u8], i: usize) -> u16 {
         u16::from_le_bytes([b[i], b[i + 1]])

@@ -29,5 +29,6 @@ pub const APP_COMMANDS: &[&str] = &[
     "permissions_status",
     "open_permission_settings",
     "island_metrics",
+    "island_sync",
     "open_url",
 ];

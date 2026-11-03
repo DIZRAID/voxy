@@ -6,6 +6,7 @@
 - [Messages on the island](#messages-on-the-island)
 - [Windows protected your PC (SmartScreen)](#windows-protected-your-pc-smartscreen)
 - [The hotkey does nothing](#the-hotkey-does-nothing)
+- [No island or start sound on Windows](#no-island-or-start-sound-on-windows)
 - [Text is recognized but not pasted](#text-is-recognized-but-not-pasted)
 - [The clipboard after a dictation](#the-clipboard-after-a-dictation)
 - [Every recording ends with "Didn't catch that"](#every-recording-ends-with-didnt-catch-that)
@@ -97,6 +98,16 @@ The keyboard hook's log lines, with English translations:
 | `не удалось запустить поток клавиатурного хука: …` | "Could not start the keyboard hook thread". The hotkey does not work until Voxy restarts |
 | `не удалось поднять приоритет потока хука (GetLastError=…)` | "Could not raise the hook thread's priority". The hotkey works, but Windows is more likely to remove the hook under load |
 | `таймер переустановки хука не создан (GetLastError=…): самолечение выключено` | "Re-hook timer not created: self-healing is off". If Windows removes the hook, the hotkey stays off until Voxy restarts |
+
+## No island or start sound on Windows
+
+Older versions could lose the island and the start and stop sounds after running for a long time (typically after sleep, a display or driver change, or switching headphones or speakers), while dictation itself kept working. Voxy now repairs this on its own:
+
+- At the start of every recording the island window is raised above other always-on-top windows and made visible again.
+- If the island page doesn't confirm the recording within 2 seconds, Voxy reloads it, and if that doesn't help, recreates the window. The log then shows `островок не ответил на начало записи` followed by `островок восстановлен`.
+- Sounds are played on whatever output device is the default at that moment. If that fails, Voxy falls back to the old method and logs `звук через WASAPI не проигран`.
+
+If the island still stays away, quit Voxy from the tray and start it again, and attach the [log](#logs) to an issue.
 
 ## Text is recognized but not pasted
 

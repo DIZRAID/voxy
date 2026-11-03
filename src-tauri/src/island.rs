@@ -10,8 +10,21 @@
 //!   ровно на нижней границе рабочей области основного монитора, отступ над
 //!   панелью задач рисует страница (island.css, html[data-platform="win"]).
 //!   Окно скрыто до загрузки страницы и никогда не забирает фокус.
+//!
+//! Что должно быть на экране, Rust хранит сам (SHOWN): каждое событие
+//! `state` несёт номер `seq`, страница подтверждает его командой
+//! island_sync, а (пере)загрузившаяся страница той же командой забирает
+//! текущее состояние. На Windows в начале записи окно заново поднимается
+//! поверх всех, а сторож (watchdog) ждёт подтверждения: нет ответа —
+//! страница перезагружается, всё ещё нет — окно пересоздаётся. Так
+//! островок переживает падение процесса WebView2 (сон, смена дисплея или
+//! драйвера), другие окна «поверх всех» и скрытие окна, которые раньше
+//! гасили его до перезапуска Voxy.
 
 use serde_json::json;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
 pub const WIDTH: f64 = 520.0;
@@ -190,6 +203,8 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         // (виртуальные рабочие столы Windows он не поддерживает).
         .build()?;
     let _ = window.set_ignore_cursor_events(true);
+    // Новое окно (в том числе пересозданное сторожем) стоит не на месте.
+    *PLACED.lock().unwrap_or_else(|e| e.into_inner()) = None;
     // До show(): окно ещё скрыто, перенос не виден.
     reposition(app);
     Ok(())
@@ -234,11 +249,13 @@ fn bottom_center(wa_x: i32, wa_y: i32, wa_width: u32, wa_height: u32, scale: f64
 /// primary_monitor() — прямой вызов Win32 (MonitorFromPoint), без похода
 /// на главный поток; set_size/set_position с чужого потока только
 /// ставятся в очередь главного.
+/// Где окно стоит сейчас (последний перенос); None — окно новое.
+#[cfg(not(target_os = "macos"))]
+static PLACED: Mutex<Option<Placement>> = Mutex::new(None);
+
 #[cfg(not(target_os = "macos"))]
 fn reposition(app: &AppHandle) {
-    use std::sync::Mutex;
     use tauri::Manager;
-    static PLACED: Mutex<Option<Placement>> = Mutex::new(None);
 
     let Some(window) = app.get_webview_window("island") else {
         return;
@@ -296,19 +313,211 @@ fn reposition(app: &AppHandle) {
     );
 }
 
+/// Последнее состояние, отправленное островку.
+struct Shown {
+    state: String,
+    message: Option<String>,
+    max_s: u64,
+    since: Instant,
+}
+
+static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
+/// Номер последнего отправленного события `state`.
+static SENT: AtomicU64 = AtomicU64::new(0);
+/// Наибольший номер, который страница островка подтвердила.
+static ACKED: AtomicU64 = AtomicU64::new(0);
+
+fn publish(app: &AppHandle, state: &str, message: Option<String>, max_s: u64) -> u64 {
+    let seq = {
+        let mut shown = SHOWN.lock().unwrap_or_else(|e| e.into_inner());
+        *shown = Some(Shown {
+            state: state.to_string(),
+            message: message.clone(),
+            max_s,
+            since: Instant::now(),
+        });
+        // Номер выдаётся под тем же локом: порядок номеров = порядок состояний.
+        SENT.fetch_add(1, Ordering::SeqCst) + 1
+    };
+    let _ = app.emit_to(
+        "island",
+        "state",
+        json!({ "state": state, "message": message, "max_s": max_s, "seq": seq }),
+    );
+    seq
+}
+
+/// Команда island_sync. `ack` — номер события, которое страница только что
+/// показала. Без `ack` страница только что загрузилась и берёт текущее
+/// состояние: после ответа она показывает всё, что было отправлено.
+pub fn sync(ack: Option<u64>) -> serde_json::Value {
+    let shown = SHOWN.lock().unwrap_or_else(|e| e.into_inner());
+    let seq = SENT.load(Ordering::SeqCst);
+    ACKED.fetch_max(ack.unwrap_or(seq).min(seq), Ordering::SeqCst);
+    match shown.as_ref() {
+        Some(s) => json!({
+            "state": s.state,
+            "message": s.message,
+            "max_s": s.max_s,
+            "elapsed_ms": s.since.elapsed().as_millis() as u64,
+            "seq": seq,
+        }),
+        None => json!({ "state": "idle", "seq": seq }),
+    }
+}
+
 /// Состояния: recording | processing | done | error | cancelled
 pub fn set_state(app: &AppHandle, state: &str, message: Option<String>) {
-    let _ = app.emit_to("island", "state", json!({ "state": state, "message": message }));
+    publish(app, state, message, 0);
 }
 
 /// Начало записи с лимитом — островок подсвечивает таймер у границы.
 pub fn set_recording(app: &AppHandle, max_s: u64) {
     // Windows: до появления пилюли — на случай, если панель задач или
-    // экран изменились с прошлой записи (дёшево, если ничего не менялось).
+    // экран изменились с прошлой записи (дёшево, если ничего не менялось),
+    // и окно снова поверх всех и видимо.
     #[cfg(not(target_os = "macos"))]
-    reposition(app);
-    let _ = app.emit_to("island", "state", json!({ "state": "recording", "max_s": max_s }));
+    {
+        reposition(app);
+        raise(app);
+    }
+    let seq = publish(app, "recording", None, max_s);
+    #[cfg(not(target_os = "macos"))]
+    spawn_watchdog(app.clone(), seq);
+    #[cfg(target_os = "macos")]
+    let _ = seq;
 }
+
+/// Сколько ждать подтверждения от страницы, прежде чем её лечить.
+#[cfg(not(target_os = "macos"))]
+const ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
+
+/// Что делать сторожу на этом шаге: страница подтвердила событие `seq`
+/// (или более позднее) — ничего; иначе первая попытка — перезагрузить
+/// страницу, вторая — пересоздать окно.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum Repair {
+    None,
+    Reload,
+    Recreate,
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn repair_step(acked: u64, seq: u64, attempt: u32) -> Repair {
+    if acked >= seq {
+        Repair::None
+    } else if attempt == 0 {
+        Repair::Reload
+    } else {
+        Repair::Recreate
+    }
+}
+
+/// Windows: сторож одной записи. Поток спит, не трогая главный поток, и
+/// лечит островок, только если страница не подтвердила начало записи.
+#[cfg(not(target_os = "macos"))]
+fn spawn_watchdog(app: AppHandle, seq: u64) {
+    let spawned = std::thread::Builder::new()
+        .name("voxy-island-watchdog".into())
+        .spawn(move || {
+            for attempt in 0..2 {
+                std::thread::sleep(ACK_TIMEOUT);
+                match repair_step(ACKED.load(Ordering::SeqCst), seq, attempt) {
+                    Repair::None => return,
+                    Repair::Reload => {
+                        log::warn!("островок не ответил на начало записи — перезагружаю страницу");
+                        reload(&app);
+                    }
+                    Repair::Recreate => {
+                        log::warn!("островок не ожил после перезагрузки — пересоздаю окно");
+                        recreate(&app);
+                    }
+                }
+            }
+            std::thread::sleep(ACK_TIMEOUT);
+            if ACKED.load(Ordering::SeqCst) < seq {
+                log::error!("островок не отвечает и после пересоздания окна");
+            } else {
+                log::info!("островок восстановлен");
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("островок: сторож не запущен: {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn reload(app: &AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("island") {
+        if let Err(e) = window.reload() {
+            log::warn!("островок: перезагрузка страницы: {e}");
+        }
+    }
+}
+
+/// Закрыть окно островка и создать заново. Вызывается со стороннего потока
+/// (сторожа): build() главный поток не блокирует.
+#[cfg(not(target_os = "macos"))]
+fn recreate(app: &AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("island") {
+        if let Err(e) = window.destroy() {
+            log::warn!("островок: закрытие окна: {e}");
+        }
+        // destroy() выполняется на главном потоке; ярлык «island» свободен,
+        // только когда окно действительно закрыто.
+        for _ in 0..50 {
+            if app.get_webview_window("island").is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    if let Err(e) = create(app) {
+        log::error!("островок: не удалось пересоздать окно: {e}");
+    }
+}
+
+/// Windows: окно снова наверху полосы «поверх всех» и видимо. Другие
+/// topmost-окна, открытые позже, оказываются выше островка, а само окно
+/// могло быть скрыто; SetWindowPos это исправляет, не активируя окно.
+/// SWP_ASYNCWINDOWPOS: запрос ставится в очередь главного потока, поток
+/// записи не ждёт его.
+#[cfg(target_os = "windows")]
+fn raise(app: &AppHandle) {
+    use tauri::Manager;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_SHOWWINDOW,
+    };
+    let Some(window) = app.get_webview_window("island") else {
+        return;
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    // SAFETY: hwnd — действующее окно островка (его ещё держит window);
+    // флаги не меняют размер, место и фокус, только z-порядок и видимость.
+    let ok = unsafe {
+        SetWindowPos(
+            hwnd.0 as _,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_ASYNCWINDOWPOS,
+        )
+    };
+    if ok == 0 {
+        log::warn!("островок: SetWindowPos не удался");
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn raise(_app: &AppHandle) {}
 
 /// Кликабельность островка: во время записи он принимает клики
 /// (кнопка Cancel), в остальное время прозрачен для мыши, чтобы
@@ -323,7 +532,18 @@ pub fn set_interactive(app: &AppHandle, interactive: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{bottom_center, Placement};
+    use super::{bottom_center, repair_step, Placement, Repair};
+
+    /// Сторож лечит только неподтверждённое событие: сначала перезагрузка
+    /// страницы, потом пересоздание окна. Подтверждение более позднего
+    /// события (островок уже показал следующее состояние) тоже считается.
+    #[test]
+    fn watchdog_escalates_only_without_ack() {
+        assert_eq!(repair_step(7, 7, 0), Repair::None);
+        assert_eq!(repair_step(9, 7, 1), Repair::None);
+        assert_eq!(repair_step(6, 7, 0), Repair::Reload);
+        assert_eq!(repair_step(6, 7, 1), Repair::Recreate);
+    }
 
     /// Низ окна — ровно на нижней границе рабочей области, по центру;
     /// размер — WIDTH×HEIGHT логических точек в физических пикселях.
